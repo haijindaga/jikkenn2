@@ -91,6 +91,28 @@ def _set_transform(pxr, prim, translation, *, scale=None) -> None:
         xform.AddScaleOp().Set(Gf.Vec3f(*(float(v) for v in scale)))
 
 
+def _place_referenced_prim(pxr, prim, translation) -> None:
+    """Position a prim that already carries xform ops from a referenced asset.
+
+    A referenced asset authors its ops at a precision we do not control — the
+    Isaac Franka uses a double-precision ``xformOp:orient`` — and adding a second
+    op at a different precision raises.  Reuse whatever op is already there and
+    leave the asset's own orientation alone.
+    """
+    from pxr import Gf, UsdGeom
+
+    xform = UsdGeom.Xformable(prim)
+    for op in xform.GetOrderedXformOps():
+        if op.GetOpType() != UsdGeom.XformOp.TypeTranslate:
+            continue
+        if op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
+            op.Set(Gf.Vec3d(*(float(v) for v in translation)))
+        else:
+            op.Set(Gf.Vec3f(*(float(v) for v in translation)))
+        return
+    xform.AddTranslateOp().Set(Gf.Vec3d(*(float(v) for v in translation)))
+
+
 def _add_box(pxr, stage, path, *, size_m, translation, color, collision=True):
     """Add a unit cube scaled to ``size_m``; returns the prim."""
     from pxr import Gf, UsdGeom, UsdPhysics, Vt
@@ -230,7 +252,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
     if franka_url is not None:
         robot = UsdGeom.Xform.Define(stage, "/World/Panda")
         robot.GetPrim().GetReferences().AddReference(franka_url)
-        _set_transform(pxr, robot.GetPrim(), scene.robot_base_position_m)
+        _place_referenced_prim(pxr, robot.GetPrim(), scene.robot_base_position_m)
         robot_referenced = True
 
     stage.GetRootLayer().Save()
@@ -271,11 +293,28 @@ def verify_stage(pxr, output: Path, scene: SceneSpec, expect_robot: bool) -> dic
         "stage_is_in_metres": abs(meters_per_unit - 1.0) < 1e-9,
         "default_prim_is_world": stage.GetDefaultPrim().GetPath().pathString == "/World",
     }
+
+    # A reference can carry its own transform, so confirm where the robot
+    # actually ended up rather than assuming the authored value took effect.
+    robot_position = None
+    robot_prim = stage.GetPrimAtPath("/World/Panda")
+    if expect_robot and robot_prim.IsValid():
+        matrix = UsdGeom.Xformable(robot_prim).ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default()
+        )
+        translation = matrix.ExtractTranslation()
+        robot_position = [round(float(value), 6) for value in translation]
+        checks["robot_is_at_the_expected_base_position"] = all(
+            abs(float(actual) - float(expected)) < 1e-6
+            for actual, expected in zip(translation, scene.robot_base_position_m)
+        )
+
     return {
         "status": "success" if all(checks.values()) else "failure",
         "missing_prims": missing,
         "up_axis": str(up_axis),
         "meters_per_unit": meters_per_unit,
+        "robot_world_position_m": robot_position,
         "automatic_checks": checks,
     }
 

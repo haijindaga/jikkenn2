@@ -134,6 +134,39 @@ def test_gravity_points_down(authored):
     assert scene.GetGravityMagnitudeAttr().Get() == pytest.approx(9.81)
 
 
+def test_placing_a_double_precision_prim_does_not_raise(tmp_path):
+    """Regression: the Isaac Franka carries a double-precision xformOp:orient.
+
+    Authoring a second, single-precision op on top of it raises
+    Tf.ErrorException, which aborted the first workstation run.
+    """
+    from pxr import Gf, Sdf
+
+    stage = Usd.Stage.CreateNew(str(tmp_path / "referenced.usda"))
+    xform = UsdGeom.Xform.Define(stage, "/Ref")
+    xform.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(1.0, 2.0, 3.0))
+    xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(1.0, 0.0, 0.0, 0.0))
+
+    build_scene_usd._place_referenced_prim(pxr, xform.GetPrim(), (0.0, 0.0, 0.0))
+
+    ops = {op.GetOpName(): op for op in UsdGeom.Xformable(xform.GetPrim()).GetOrderedXformOps()}
+    assert tuple(ops["xformOp:translate"].Get()) == pytest.approx((0.0, 0.0, 0.0))
+    # The asset's own orientation is left untouched, at its own precision.
+    assert ops["xformOp:orient"].GetPrecision() == UsdGeom.XformOp.PrecisionDouble
+    assert Sdf.Path("/Ref").pathString == "/Ref"
+
+
+def test_placing_a_prim_without_ops_adds_a_translate(tmp_path):
+    from pxr import Gf
+
+    stage = Usd.Stage.CreateNew(str(tmp_path / "bare.usda"))
+    xform = UsdGeom.Xform.Define(stage, "/Bare")
+    build_scene_usd._place_referenced_prim(pxr, xform.GetPrim(), (0.1, 0.2, 0.3))
+    ops = {op.GetOpName(): op for op in UsdGeom.Xformable(xform.GetPrim()).GetOrderedXformOps()}
+    assert tuple(ops["xformOp:translate"].Get()) == pytest.approx((0.1, 0.2, 0.3))
+    assert Gf.Vec3d(0.1, 0.2, 0.3)  # value type is double, as authored
+
+
 def test_tool_annotation_matches_the_spec(tmp_path):
     import json
 
