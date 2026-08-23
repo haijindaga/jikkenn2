@@ -503,6 +503,26 @@ def main() -> int:
         built = author_stage(pxr, scene, args.output, franka_url)
         verified = verify_stage(pxr, args.output, scene, expect_robot=franka_url is not None)
         annotation = write_tool_annotation(scene, args.tool_annotation)
+
+        # Write and print the report *before* closing Isaac.  SimulationApp runs
+        # with fastShutdown, and close() can take the process down with it, so
+        # anything emitted after the finally block may never appear.
+        report = {
+            "status": verified["status"],
+            "scene_layout_status": layout["status"],
+            "stage": built,
+            "verification": verified,
+            "tool_annotation": str(args.tool_annotation),
+            "next_step": (
+                "python scripts/arrange_scene.py --gui --scene "
+                f"{args.output} to place the tool and obstacles"
+            ),
+        }
+        report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2), flush=True)
+        print(f"parts: {', '.join(annotation['parts'])}", flush=True)
+        print(f"saved: {args.output}", flush=True)
+        print(f"BUILD {verified['status'].upper()} -> {report_path}", flush=True)
     except Exception as error:
         # Always leave an artifact behind.  A failure that produces nothing to
         # read is exactly how jikkenn1 lost time.
@@ -527,22 +547,6 @@ def main() -> int:
         if simulation_app is not None:
             simulation_app.close()
 
-    report = {
-        "status": verified["status"],
-        "scene_layout_status": layout["status"],
-        "stage": built,
-        "verification": verified,
-        "tool_annotation": str(args.tool_annotation),
-        "next_step": (
-            "python scripts/arrange_scene.py --gui --scene "
-            f"{args.output} to place the tool and obstacles"
-        ),
-    }
-    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-
-    print(json.dumps(report, indent=2))
-    print(f"parts: {', '.join(annotation['parts'])}")
-    print(f"saved: {args.output}")
     if verified["status"] != "success":
         raise RuntimeError(f"stage verification failed; inspect {report_path}")
     return 0
