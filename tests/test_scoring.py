@@ -186,15 +186,47 @@ def test_a_centimetre_of_error_is_still_a_pass(passing_execution, target_tool_po
     assert run(nearly, target_tool_pose)["trial_passed"] is True
 
 
-def test_an_execution_without_hand_poses_cannot_judge_the_grasp(
+def test_an_execution_without_hand_poses_is_unmeasurable_not_failed(
     passing_execution, target_tool_pose
 ):
+    """A recording gap is not a robot failure and must not read as one."""
     broken = copy.deepcopy(passing_execution)
     for sample in broken["samples"]:
         sample["hand"] = None
     result = run(broken, target_tool_pose)
-    assert result["failed"] == ["grasped_the_intended_part"]
+    assert result["status"] == "not_measurable"
+    assert result["failed"] == []
+    assert result["unmeasurable"] == ["grasped_the_intended_part"]
+    assert result["fully_measured"] is False
+    assert result["trial_passed"] is False
     assert "cannot locate the fingertips" in result["criteria"][0]["detail"]
+
+
+def test_an_unmeasurable_trial_is_left_out_of_the_success_rate(
+    passing_execution, target_tool_pose
+):
+    good = run(passing_execution, target_tool_pose)
+    blind = copy.deepcopy(passing_execution)
+    for sample in blind["samples"]:
+        sample["hand"] = None
+    unmeasurable = run(blind, target_tool_pose)
+
+    summary = scoring.summarize([good, unmeasurable, good])
+    assert summary["trials"] == 3
+    assert summary["measured_trials"] == 2
+    assert summary["unmeasurable_trials"] == 1
+    assert summary["success_rate"] == pytest.approx(1.0)
+
+
+def test_a_real_failure_still_counts_against_the_rate(
+    passing_execution, target_tool_pose
+):
+    good = run(passing_execution, target_tool_pose)
+    dropped = copy.deepcopy(passing_execution)
+    dropped["carry"]["grip_lost_at"] = {"step": 1, "leg": "lift"}
+    summary = scoring.summarize([good, run(dropped, target_tool_pose)])
+    assert summary["measured_trials"] == 2
+    assert summary["success_rate"] == pytest.approx(0.5)
 
 
 def test_thresholds_can_be_tightened(passing_execution, target_tool_pose):

@@ -53,10 +53,19 @@ def _sample(execution: dict, label: str) -> dict | None:
     return None
 
 
-def _criterion(name: str, passed: bool, measured, threshold, detail: str) -> dict:
+def _criterion(
+    name: str, passed: bool, measured, threshold, detail: str, *, measurable: bool = True
+) -> dict:
+    """One criterion's verdict.
+
+    ``measurable`` separates "the robot did the wrong thing" from "the trial
+    did not record what this criterion needs". Counting the second as a failure
+    would quietly bias a success rate downwards.
+    """
     return {
         "criterion": name,
-        "passed": bool(passed),
+        "passed": bool(passed) and bool(measurable),
+        "measurable": bool(measurable),
         "measured": measured,
         "threshold": threshold,
         "detail": detail,
@@ -100,6 +109,7 @@ def score(
             part,
             scene.grasp_part_name,
             how,
+            measurable=part is not None,
         )
     )
 
@@ -199,13 +209,26 @@ def score(
     )
 
     passed = [entry["criterion"] for entry in criteria if entry["passed"]]
-    failed = [entry["criterion"] for entry in criteria if not entry["passed"]]
+    unmeasurable = [entry["criterion"] for entry in criteria if not entry["measurable"]]
+    failed = [
+        entry["criterion"]
+        for entry in criteria
+        if entry["measurable"] and not entry["passed"]
+    ]
+    if unmeasurable:
+        status = "not_measurable"
+    elif failed:
+        status = "failed_criteria"
+    else:
+        status = "success"
     return {
-        "status": "success" if not failed else "failed_criteria",
-        "trial_passed": not failed,
+        "status": status,
+        "trial_passed": not failed and not unmeasurable,
+        "fully_measured": not unmeasurable,
         "passed_count": len(passed),
         "total_count": len(criteria),
         "failed": failed,
+        "unmeasurable": unmeasurable,
         "criteria": criteria,
         "thresholds": asdict(limits),
         "claim": (
@@ -217,26 +240,35 @@ def score(
 
 
 def summarize(scores: list[dict]) -> dict:
-    """Aggregate many trials into a success rate, per criterion as well."""
+    """Aggregate trials into a success rate.
+
+    Trials that could not be fully measured are counted separately and left out
+    of the rate, so a recording gap never reads as a robot failure.
+    """
     if not scores:
         return {"trials": 0}
+    measured = [result for result in scores if result.get("fully_measured", True)]
     names = [entry["criterion"] for entry in scores[0]["criteria"]]
     per_criterion = {
         name: sum(
             1
-            for result in scores
+            for result in measured
             for entry in result["criteria"]
             if entry["criterion"] == name and entry["passed"]
         )
         for name in names
     }
-    passed = sum(1 for result in scores if result["trial_passed"])
+    passed = sum(1 for result in measured if result["trial_passed"])
     return {
         "trials": len(scores),
+        "measured_trials": len(measured),
+        "unmeasurable_trials": len(scores) - len(measured),
         "passed": passed,
-        "success_rate": round(passed / len(scores), 4),
+        "success_rate": round(passed / len(measured), 4) if measured else None,
+        "success_rate_is_over": "fully measured trials only",
         "passed_per_criterion": per_criterion,
         "success_rate_per_criterion": {
-            name: round(count / len(scores), 4) for name, count in per_criterion.items()
+            name: round(count / len(measured), 4) if measured else None
+            for name, count in per_criterion.items()
         },
     }

@@ -79,14 +79,27 @@ def main() -> int:
     if not args.quiet:
         width = max(len(entry["criterion"]) for entry in result["criteria"])
         for entry in result["criteria"]:
-            mark = "PASS" if entry["passed"] else "FAIL"
+            if not entry["measurable"]:
+                mark = "N/A "
+            elif entry["passed"]:
+                mark = "PASS"
+            else:
+                mark = "FAIL"
             print(f"{mark}  {entry['criterion'].ljust(width)}  {entry['measured']}")
+            if not entry["measurable"]:
+                print(f"      {entry['detail']}")
         print()
+    verdict = {
+        "success": "PASSED",
+        "failed_criteria": "FAILED",
+        "not_measurable": "NOT MEASURABLE",
+    }[result["status"]]
     print(
-        f"TRIAL {'PASSED' if result['trial_passed'] else 'FAILED'} "
-        f"{result['passed_count']}/{result['total_count']} -> {output}",
+        f"TRIAL {verdict} {result['passed_count']}/{result['total_count']} -> {output}",
         flush=True,
     )
+    if result["status"] == "not_measurable":
+        return 3
     return 0 if result["trial_passed"] else 2
 
 
