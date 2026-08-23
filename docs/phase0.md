@@ -252,7 +252,7 @@ Phase 2 で実メッシュに替えると重心はアセット側の性質にな
 | `plan_handover.py` | B | GT 姿勢 → 4 区間の軌道（cuRobo） | 済（cuRobo 呼び出しは未検証） |
 | `execute_handover.py` | A | 軌道実行・把持・持ち上げ・handover・計測 | 済（Isaac 実行は未検証） |
 | `score_trial.py` | — | 6 項目の自動採点 | 済（Isaac も GPU も不要） |
-| `run_phase0.py` | — | arrangements をループ | 未 |
+| `run_phase0.py` | — | arrangements をループ（各段を別プロセスで起動）| 済 |
 
 ### コマンド列
 
@@ -282,7 +282,7 @@ python scripts/execute_handover.py --capture outputs/trial_001 \
        --plan outputs/trial_001/plan --record-video
 python scripts/score_trial.py --trial outputs/trial_001
 
-# 全部回す
+# 全部回す（各段を別プロセスで起動するので、環境の切り替えは不要）
 python scripts/run_phase0.py --arrangements arrangements/ --output outputs/phase0
 ```
 
