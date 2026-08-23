@@ -43,11 +43,8 @@ FRANKA_CANDIDATE_PATHS = (
 ROBOT_SEARCH_ROOT = "/Isaac/Robots"
 ROBOT_SEARCH_DEPTH = 3
 
-OBSTACLE_LAYOUT = (
-    ("obstacle_a", (0.45, -0.18, 0.05), (0.10, 0.10, 0.10), (0.85, 0.25, 0.15)),
-    ("obstacle_b", (0.62, 0.28, 0.06), (0.08, 0.08, 0.12), (0.90, 0.55, 0.15)),
-    ("obstacle_c", (0.35, 0.35, 0.04), (0.12, 0.12, 0.08), (0.75, 0.35, 0.20)),
-)
+# Obstacle geometry lives in scene_spec, which owns every metric value.
+OBSTACLE_LAYOUT = DEFAULT_SCENE.obstacles
 
 
 def parse_args() -> argparse.Namespace:
@@ -203,14 +200,14 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
 
     # --- movable obstacles ---------------------------------------------
     UsdGeom.Xform.Define(stage, "/World/Obstacles")
-    for name, position, size, color in OBSTACLE_LAYOUT:
+    for obstacle in scene.obstacles:
         prim = _add_box(
             pxr,
             stage,
-            f"/World/Obstacles/{name}",
-            size_m=size,
-            translation=position,
-            color=color,
+            obstacle.prim_path,
+            size_m=obstacle.size_m,
+            translation=obstacle.initial_position_m,
+            color=obstacle.color,
         )
         _make_rigid_body(pxr, prim, mass_kg=0.3)
 

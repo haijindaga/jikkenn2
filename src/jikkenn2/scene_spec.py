@@ -45,6 +45,20 @@ class ToolPart:
 
 
 @dataclass(frozen=True)
+class ObstacleSpec:
+    """A movable box on the table, in world metres."""
+
+    name: str
+    size_m: tuple[float, float, float]
+    initial_position_m: tuple[float, float, float]
+    color: tuple[float, float, float]
+
+    @property
+    def prim_path(self) -> str:
+        return f"/World/Obstacles/{self.name}"
+
+
+@dataclass(frozen=True)
 class SceneSpec:
     """Metric layout of the Phase 0 tabletop scene."""
 
@@ -106,6 +120,17 @@ class SceneSpec:
     danger_part_name: str = "head"
     safe_part_name: str = "handle"
     grasp_part_name: str = "head"
+
+    # --- movable obstacles ------------------------------------------------
+    # Sizes live here, not in the stage builder, because the planner needs the
+    # collision boxes and only the poses travel in an arrangement file.
+    obstacles: tuple[ObstacleSpec, ...] = field(
+        default_factory=lambda: (
+            ObstacleSpec("obstacle_a", (0.10, 0.10, 0.10), (0.45, -0.18, 0.05), (0.85, 0.25, 0.15)),
+            ObstacleSpec("obstacle_b", (0.08, 0.08, 0.12), (0.62, 0.28, 0.06), (0.90, 0.55, 0.15)),
+            ObstacleSpec("obstacle_c", (0.12, 0.12, 0.08), (0.35, 0.35, 0.04), (0.75, 0.35, 0.20)),
+        )
+    )
 
     # ------------------------------------------------------------------
     # derived table geometry
