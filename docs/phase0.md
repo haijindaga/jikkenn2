@@ -231,7 +231,7 @@ Phase 0 の道具は **proxy tool（柄の箱 + 頭の箱）**。実メッシュ
 | `build_scene_usd.py` | A | `assets/scene.usd` を生成 | 済（USD 部分は検証済み） |
 | `reachability_map.py` | B | 到達可能領域の計算とオーバーレイ | 済（cuRobo 呼び出しは未検証） |
 | `arrange_scene.py` | A | GUI 起動 → 人が配置 → arrangement 保存 | 済（ロジックは検証済み） |
-| `capture_scene.py` | A | 配置復元 → RGB-D・関節・GT 姿勢の保存 | 未 |
+| `capture_scene.py` | A | 配置復元 → 物理で安定化 → RGB-D・関節・GT 姿勢の保存 | 済（Isaac 実行は未検証） |
 | `plan_handover.py` | B | GT 姿勢 → 把持姿勢 → cuRobo ESDF → 軌道 | 未 |
 | `execute_handover.py` | A | 軌道実行・把持・持ち上げ・handover・動画 | 未 |
 | `score_trial.py` | — | 6 項目の自動採点 | 未 |
