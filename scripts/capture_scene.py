@@ -26,6 +26,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from jikkenn2.isaac_bridge import make_articulation, set_home_configuration  # noqa: E402
 from jikkenn2.scene_spec import DEFAULT_SCENE  # noqa: E402
 
 TOOL_PRIM_PATH = "/World/Tools/proxy_tool"
@@ -42,62 +43,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-frames", type=int, default=60)
     parser.add_argument("--gui", action="store_true", help="Show the viewport while capturing")
     return parser.parse_args()
-
-
-def make_articulation(prim_path: str, name: str):
-    """Wrap an articulation that is already in the stage.
-
-    Isaac renamed these classes between releases, so try the known homes and
-    say which ones were tried instead of failing on an import line.
-    """
-    attempts: list[str] = []
-    try:
-        from isaacsim.core.prims import SingleArticulation
-
-        attempts.append("isaacsim.core.prims.SingleArticulation")
-        return SingleArticulation(prim_path=prim_path, name=name)
-    except ImportError:
-        pass
-    try:
-        from isaacsim.core.api.robots import Robot
-
-        attempts.append("isaacsim.core.api.robots.Robot")
-        return Robot(prim_path=prim_path, name=name)
-    except ImportError:
-        pass
-    raise RuntimeError(
-        "no articulation wrapper found for "
-        f"{prim_path}. Tried: {', '.join(attempts) or 'nothing importable'}. "
-        "Check the Isaac Sim release notes for the current class."
-    )
-
-
-def set_home_configuration(articulation, home) -> str:
-    """Put the arm at the home pose *and* make the drives hold it there.
-
-    Setting positions alone is not enough: the position controller keeps
-    pulling toward its own targets, so the targets have to move too.
-    """
-    import numpy as np
-
-    positions = np.asarray(home, dtype=np.float32)
-    used = []
-    if hasattr(articulation, "set_joints_default_state"):
-        articulation.set_joints_default_state(positions=positions)
-        used.append("set_joints_default_state")
-    articulation.set_joint_positions(positions)
-    used.append("set_joint_positions")
-    for setter in ("set_joint_position_targets", "set_joint_positions_target"):
-        if hasattr(articulation, setter):
-            getattr(articulation, setter)(positions)
-            used.append(setter)
-            break
-    if len(used) < 2:
-        raise RuntimeError(
-            "could not pin the home configuration: this articulation exposes "
-            f"only {used}. Check the Isaac Sim API for setting drive targets."
-        )
-    return "+".join(used)
 
 
 def configure_camera(camera, scene, resolution):
