@@ -37,6 +37,7 @@ from jikkenn2.scene_spec import DEFAULT_SCENE  # noqa: E402
 
 TOOL_PRIM_PATH = "/World/Tools/proxy_tool"
 ROBOT_PRIM_PATH = "/World/Panda"
+HAND_PRIM_PATH = "/World/Panda/panda_hand"
 FINGER_JOINTS = ("panda_finger_joint1", "panda_finger_joint2")
 
 OPEN_M = 0.04
@@ -122,6 +123,23 @@ def load_plan(plan_dir: Path) -> dict:
     }
 
 
+def _rotation_in_grip(recorder, final) -> float | None:
+    """Tool rotation relative to the hand, from the close to the end."""
+    from jikkenn2 import ground_truth as gt
+
+    closed = next(
+        (entry for entry in recorder.samples if entry["label"] == "after_close"), None
+    )
+    if closed is None or closed.get("hand") is None or final.get("hand") is None:
+        return None
+    return round(
+        gt.rotation_in_grip_deg(
+            closed["hand"], closed["tool"], final["hand"], final["tool"]
+        ),
+        3,
+    )
+
+
 class Recorder:
     """Collects what the trial did, without deciding whether it was good."""
 
@@ -152,6 +170,12 @@ class Recorder:
 
     def obstacle_poses(self) -> dict[str, dict]:
         return {path: self.pose(path) for path in self.obstacle_paths}
+
+    def hand_pose(self) -> dict | None:
+        """The gripper's world pose, if the asset exposes it under that name."""
+        if not self.stage.GetPrimAtPath(HAND_PRIM_PATH).IsValid():
+            return None
+        return self.pose(HAND_PRIM_PATH)
 
     def trace(self, step: int, leg: str, articulation) -> None:
         actual = np.asarray(articulation.get_joint_positions(), dtype=np.float64)
@@ -199,6 +223,7 @@ class Recorder:
         entry = {
             "label": label,
             "tool": self.pose(self.tool_prim_path),
+            "hand": self.hand_pose(),
             "gripper_width_m": round(
                 gripper_width_m(articulation.dof_names, actual), 5
             ),
@@ -364,14 +389,18 @@ def main() -> int:
             "obstacle_motion": obstacle_motion,
             "carry": {
                 **recorder.trace_summary(scene.table_top_z_m),
-                # How far the tool turned inside the fingers between the moment
-                # it was gripped and the end of the trial. A firm grasp keeps
-                # this near zero; a pivot means gravity is winning.
-                "tool_rotation_in_grip_deg": gt.pose_difference(
-                    recorder.samples[3]["tool"], final["tool"]
-                )["rotation_deg"]
-                if len(recorder.samples) > 3
-                else None,
+                # How far the tool turned inside the *hand* between the moment
+                # it was gripped and the end of the trial. Measured in world
+                # coordinates this would include the ~94 degree yaw the handover
+                # applies on purpose, and a firm grasp would read as a slip.
+                "tool_rotation_in_grip_deg": _rotation_in_grip(recorder, final),
+                "tool_rotation_in_world_deg": (
+                    gt.pose_difference(recorder.samples[3]["tool"], final["tool"])[
+                        "rotation_deg"
+                    ]
+                    if len(recorder.samples) > 3
+                    else None
+                ),
             },
             "finger_drives": finger_drive_report(stage),
             "final_tool": final["tool"],

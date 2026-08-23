@@ -200,3 +200,44 @@ def test_settle_report_rejects_an_unknown_object():
     ]
     with pytest.raises(KeyError, match="/b"):
         gt.settle_report(authored, settled)
+
+
+def test_rotation_in_grip_ignores_rotation_applied_by_the_arm():
+    """A firm grasp reads zero even when the arm turns the tool 90 degrees."""
+    hand_then = {"position_m": [0.4, 0.1, 0.3], "orientation_wxyz": IDENTITY_QUAT}
+    tool_then = {"position_m": [0.4, 0.1, 0.2], "orientation_wxyz": IDENTITY_QUAT}
+    # The arm yaws by 90 degrees about the hand origin, carrying the tool with it.
+    hand_now = {"position_m": [0.4, 0.1, 0.3], "orientation_wxyz": YAW_90_QUAT}
+    tool_now = {"position_m": [0.5, 0.1, 0.2], "orientation_wxyz": YAW_90_QUAT}
+    assert gt.rotation_in_grip_deg(hand_then, tool_then, hand_now, tool_now) == (
+        pytest.approx(0.0, abs=1e-9)
+    )
+
+
+def test_rotation_in_grip_reports_a_tool_that_turned_in_the_fingers():
+    hand = {"position_m": [0.4, 0.1, 0.3], "orientation_wxyz": IDENTITY_QUAT}
+    tool_then = {"position_m": [0.4, 0.1, 0.2], "orientation_wxyz": IDENTITY_QUAT}
+    tool_now = {"position_m": [0.4, 0.1, 0.2], "orientation_wxyz": YAW_90_QUAT}
+    assert gt.rotation_in_grip_deg(hand, tool_then, hand, tool_now) == pytest.approx(
+        90.0, abs=1e-6
+    )
+
+
+def test_world_rotation_would_have_reported_the_arms_own_turn():
+    """The old measurement, kept to show why the hand-relative one is needed."""
+    tool_then = {"position_m": [0.4, 0.1, 0.2], "orientation_wxyz": IDENTITY_QUAT}
+    tool_now = {"position_m": [0.5, 0.1, 0.2], "orientation_wxyz": YAW_90_QUAT}
+    assert gt.pose_difference(tool_then, tool_now)["rotation_deg"] == pytest.approx(
+        90.0, abs=1e-3
+    )
+
+
+def test_pose_in_frame_round_trips():
+    frame = gt.tool_pose_matrix([0.3, -0.2, 0.4], YAW_90_QUAT)
+    pose = gt.tool_pose_matrix([0.5, 0.1, 0.2], YAW_180_QUAT)
+    assert frame @ gt.pose_in_frame(frame, pose) == pytest.approx(pose, abs=1e-12)
+
+
+def test_rotation_between_identical_poses_is_zero():
+    pose = gt.tool_pose_matrix([0.1, 0.2, 0.3], YAW_90_QUAT)
+    assert gt.rotation_between_deg(pose, pose) == pytest.approx(0.0, abs=1e-9)

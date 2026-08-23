@@ -251,7 +251,7 @@ Phase 2 で実メッシュに替えると重心はアセット側の性質にな
 | `capture_scene.py` | A | 配置復元 → 物理で安定化 → RGB-D・関節・GT 姿勢の保存 | 済（Isaac 実行は未検証） |
 | `plan_handover.py` | B | GT 姿勢 → 4 区間の軌道（cuRobo） | 済（cuRobo 呼び出しは未検証） |
 | `execute_handover.py` | A | 軌道実行・把持・持ち上げ・handover・計測 | 済（Isaac 実行は未検証） |
-| `score_trial.py` | — | 6 項目の自動採点 | 未 |
+| `score_trial.py` | — | 6 項目の自動採点 | 済（Isaac も GPU も不要） |
 | `run_phase0.py` | — | arrangements をループ | 未 |
 
 ### コマンド列

@@ -130,17 +130,48 @@ def handover_orientation(tool_pose: np.ndarray, scene: SceneSpec) -> dict:
     }
 
 
+def rotation_between_deg(first: np.ndarray, second: np.ndarray) -> float:
+    """Angle of the rotation carrying one pose's orientation onto another's."""
+    a = np.asarray(first, dtype=np.float64)
+    b = np.asarray(second, dtype=np.float64)
+    relative = a[:3, :3].T @ b[:3, :3]
+    cosine = float(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def pose_in_frame(frame_pose: np.ndarray, pose: np.ndarray) -> np.ndarray:
+    """Express ``pose`` in the frame of ``frame_pose``."""
+    return np.linalg.inv(np.asarray(frame_pose, dtype=np.float64)) @ np.asarray(
+        pose, dtype=np.float64
+    )
+
+
+def rotation_in_grip_deg(
+    hand_then: dict, tool_then: dict, hand_now: dict, tool_now: dict
+) -> float:
+    """How far the tool turned *inside the hand* between two moments.
+
+    Measuring in world coordinates would count the rotation the arm applies on
+    purpose -- the handover deliberately yaws the tool about 94 degrees to
+    point the handle at the person -- and report a firm grasp as a slip.
+    """
+    def matrix(pose: dict) -> np.ndarray:
+        return tool_pose_matrix(pose["position_m"], pose["orientation_wxyz"])
+
+    return rotation_between_deg(
+        pose_in_frame(matrix(hand_then), matrix(tool_then)),
+        pose_in_frame(matrix(hand_now), matrix(tool_now)),
+    )
+
+
 def pose_difference(before: dict, after: dict) -> dict:
     """Translation and rotation between two recorded poses of one object."""
     first = tool_pose_matrix(before["position_m"], before["orientation_wxyz"])
     second = tool_pose_matrix(after["position_m"], after["orientation_wxyz"])
-    translation = float(np.linalg.norm(second[:3, 3] - first[:3, 3]))
-    relative = first[:3, :3].T @ second[:3, :3]
-    cosine = float(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
     return {
         "prim_path": after.get("prim_path", before.get("prim_path")),
-        "translation_m": round(translation, 5),
-        "rotation_deg": round(float(np.degrees(np.arccos(cosine))), 3),
+        "translation_m": round(float(np.linalg.norm(second[:3, 3] - first[:3, 3])), 5),
+        "rotation_deg": round(rotation_between_deg(first, second), 3),
     }
 
 
