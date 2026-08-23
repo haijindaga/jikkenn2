@@ -169,12 +169,16 @@ def _add_box(
     return cube.GetPrim()
 
 
-def _make_rigid_body(pxr, prim, *, mass_kg: float) -> None:
-    from pxr import UsdPhysics
+def _make_rigid_body(pxr, prim, *, mass_kg: float, center_of_mass_m=None) -> None:
+    from pxr import Gf, UsdPhysics
 
     UsdPhysics.RigidBodyAPI.Apply(prim)
     mass_api = UsdPhysics.MassAPI.Apply(prim)
     mass_api.CreateMassAttr(float(mass_kg))
+    if center_of_mass_m is not None:
+        mass_api.CreateCenterOfMassAttr(
+            Gf.Vec3f(*(float(v) for v in center_of_mass_m))
+        )
 
 
 def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) -> dict:
@@ -246,7 +250,16 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
         scene.table_top_z_m + 0.5 * tallest,
     )
     _set_transform(pxr, tool_root.GetPrim(), tool_origin)
-    _make_rigid_body(pxr, tool_root.GetPrim(), mass_kg=TOOL_MASS_KG)
+    # Put the centre of mass in the part that gets grasped. A hammer or a knife
+    # carries most of its mass there; a uniform-density proxy would instead be
+    # handle-heavy purely because the handle is long, and would hang and pivot
+    # in the fingers for reasons that have nothing to do with the real tool.
+    _make_rigid_body(
+        pxr,
+        tool_root.GetPrim(),
+        mass_kg=TOOL_MASS_KG,
+        center_of_mass_m=scene.part(scene.grasp_part_name).center_m,
+    )
     part_colors = {
         scene.danger_part_name: (0.85, 0.20, 0.15),
         scene.safe_part_name: (0.20, 0.55, 0.85),
@@ -322,6 +335,9 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
         "output": str(output),
         "physics": {
             "tool_mass_kg": TOOL_MASS_KG,
+            "tool_center_of_mass_local_m": list(
+                scene.part(scene.grasp_part_name).center_m
+            ),
             "grip_friction": [GRIP_STATIC_FRICTION, GRIP_DYNAMIC_FRICTION],
             "surface_friction": [SURFACE_STATIC_FRICTION, SURFACE_DYNAMIC_FRICTION],
         },

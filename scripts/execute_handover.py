@@ -70,6 +70,36 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def finger_drive_report(stage, root: str = ROBOT_PRIM_PATH) -> dict:
+    """Read the gripper's drive parameters straight from the stage.
+
+    If the tool ever pivots or slips again, the first question is how much
+    force the fingers can actually apply, and guessing at that from the outside
+    wastes a run.
+    """
+    from pxr import Usd, UsdPhysics
+
+    report = {}
+    prim_root = stage.GetPrimAtPath(root)
+    if not prim_root.IsValid():
+        return {"error": f"{root} is not in the stage"}
+    for prim in Usd.PrimRange(prim_root):
+        if "finger" not in prim.GetName().lower():
+            continue
+        for instance in ("linear", "angular", "transX", "transY", "transZ"):
+            drive = UsdPhysics.DriveAPI.Get(prim, instance)
+            if not drive:
+                continue
+            report[f"{prim.GetPath().pathString}:{instance}"] = {
+                "type": drive.GetTypeAttr().Get(),
+                "stiffness": drive.GetStiffnessAttr().Get(),
+                "damping": drive.GetDampingAttr().Get(),
+                "max_force": drive.GetMaxForceAttr().Get(),
+                "target_position": drive.GetTargetPositionAttr().Get(),
+            }
+    return report
+
+
 def load_plan(plan_dir: Path) -> dict:
     report_path = plan_dir / "plan_check.json"
     if not report_path.is_file():
@@ -332,7 +362,18 @@ def main() -> int:
             "legs_replayed": list(plan["segments"]),
             "samples": recorder.samples,
             "obstacle_motion": obstacle_motion,
-            "carry": recorder.trace_summary(scene.table_top_z_m),
+            "carry": {
+                **recorder.trace_summary(scene.table_top_z_m),
+                # How far the tool turned inside the fingers between the moment
+                # it was gripped and the end of the trial. A firm grasp keeps
+                # this near zero; a pivot means gravity is winning.
+                "tool_rotation_in_grip_deg": gt.pose_difference(
+                    recorder.samples[3]["tool"], final["tool"]
+                )["rotation_deg"]
+                if len(recorder.samples) > 3
+                else None,
+            },
+            "finger_drives": finger_drive_report(stage),
             "final_tool": final["tool"],
             "final_handover_orientation": gt.handover_orientation(tool_pose, scene),
             "frames_saved": saved_frames,
