@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Experiment artifacts: regenerate them, do not commit them.
+outputs/*
+!outputs/.gitkeep
+# scene.usd is a build product of build_scene_usd.py, not source.
+*.usd
+*.usda
+*.usdc
+*.ply
+*.npy
+*.mp4
+
+# Arrangements ARE committed: they are the reproducible half of the experiment.
+!arrangements/*.json
