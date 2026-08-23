@@ -94,6 +94,45 @@ def part_containing(
     return None
 
 
+def points_in_tool_mask(
+    tool_pose: np.ndarray,
+    scene: SceneSpec,
+    points_world: np.ndarray,
+    *,
+    margin_m: float = 0.01,
+) -> np.ndarray:
+    """Boolean image marking pixels whose 3-D point lies on the tool.
+
+    Phase 1 has no perception yet, so the tool is removed from the depth using
+    its true pose.  Working from the pixel-aligned point map rather than a
+    projected bounding box keeps the mask exact whatever the tool's rotation.
+    """
+    transform = np.asarray(tool_pose, dtype=np.float64)
+    points = np.asarray(points_world, dtype=np.float64)
+    if transform.shape != (4, 4):
+        raise ValueError(f"tool_pose must be 4x4, got {transform.shape}")
+    if points.ndim != 3 or points.shape[2] != 3:
+        raise ValueError(f"points_world must be HxWx3, got {points.shape}")
+    if margin_m < 0.0:
+        raise ValueError("margin_m must not be negative")
+
+    flat = points.reshape(-1, 3)
+    finite = np.all(np.isfinite(flat), axis=1)
+    local = np.full_like(flat, np.nan)
+    local[finite] = (flat[finite] - transform[:3, 3]) @ transform[:3, :3]
+
+    mask = np.zeros(flat.shape[0], dtype=bool)
+    for part in scene.tool_parts:
+        minimum, maximum = part.aabb_local_m()
+        inside = finite & np.all(
+            (local >= np.asarray(minimum) - margin_m)
+            & (local <= np.asarray(maximum) + margin_m),
+            axis=1,
+        )
+        mask |= inside
+    return mask.reshape(points.shape[:2])
+
+
 def angle_between_deg(first, second) -> float:
     """Angle between two directions, in degrees."""
     a = np.asarray(first, dtype=np.float64)

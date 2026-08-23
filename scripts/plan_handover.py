@@ -44,6 +44,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--capture", type=Path, required=True)
     parser.add_argument("--tool", type=Path, default=REPO_ROOT / "assets" / "tools" / "proxy_tool.json")
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--map",
+        type=Path,
+        default=None,
+        help="Phase 1: plan against a measured ESDF instead of ground-truth boxes",
+    )
     parser.add_argument("--robot", default="franka.yml")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--approach-offset", type=float, default=hv.DEFAULT_APPROACH_OFFSET_M)
@@ -108,6 +114,38 @@ def to_robot_base(pose_world: np.ndarray, T_world_robot_base: np.ndarray) -> np.
     return np.linalg.inv(T_world_robot_base) @ pose_world
 
 
+def measured_world(map_dir: Path, device):
+    """Load a Phase 1 map as a cuRobo VoxelGrid, refusing one that failed its gates."""
+    import json as _json
+
+    import torch
+    from curobo._src.geom.types import VoxelGrid
+
+    report_path = map_dir / "map_check.json"
+    report = _json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("status") != "success":
+        raise ValueError(
+            f"{report_path} reports status={report.get('status')!r}; a map that "
+            "failed its acceptance test must not be planned against"
+        )
+    grid = _json.loads((map_dir / "grid.json").read_text(encoding="utf-8"))
+    features = np.load(map_dir / "esdf_features.npy")
+    voxel_size = float(grid["voxel_size_m"])
+    return (
+        VoxelGrid(
+            name="measured_esdf",
+            pose=[*grid["center_robot_base_m"], 1.0, 0.0, 0.0, 0.0],
+            dims=[float(count) * voxel_size for count in grid["shape"]],
+            voxel_size=voxel_size,
+            feature_tensor=torch.from_numpy(features)
+            .to(device=device, dtype=torch.float16)
+            .contiguous(),
+            feature_dtype=torch.float16,
+        ),
+        report,
+    )
+
+
 def build_planner(args, scene, boxes):
     import torch
     from curobo._src.geom.types import Cuboid, SceneCfg
@@ -119,19 +157,49 @@ def build_planner(args, scene, boxes):
         raise RuntimeError("cuRobo planning requires CUDA")
 
     device_cfg = DeviceCfg(device=torch.device(args.device), dtype=torch.float32)
-    cuboids = [
-        Cuboid(
-            name="table",
-            pose=[*scene.table_center_m, 1.0, 0.0, 0.0, 0.0],
-            dims=list(scene.table_size_m),
-        )
-    ]
-    cuboids += [
-        Cuboid(name=box["name"], pose=box["pose"], dims=box["dims"]) for box in boxes
-    ]
+    if args.map is not None:
+        voxel_grid, map_report = measured_world(args.map, device_cfg.device)
+        scene_model = SceneCfg(voxel=[voxel_grid])
+        world = {
+            "source": "measured_esdf",
+            "map": str(args.map),
+            "map_acceptance_test": map_report["acceptance_test"],
+            "cuboids": 0,
+            "table_included": "as measured",
+            "obstacles_included": "as measured",
+            "tool_included": False,
+            "why_tool_excluded": (
+                "cleared from the depth before mapping; the hand has to reach it"
+            ),
+            "attached_object_modelled": False,
+        }
+    else:
+        cuboids = [
+            Cuboid(
+                name="table",
+                pose=[*scene.table_center_m, 1.0, 0.0, 0.0, 0.0],
+                dims=list(scene.table_size_m),
+            )
+        ]
+        cuboids += [
+            Cuboid(name=box["name"], pose=box["pose"], dims=box["dims"]) for box in boxes
+        ]
+        scene_model = SceneCfg(cuboid=cuboids)
+        world = {
+            "source": "ground_truth_boxes",
+            "cuboids": len(cuboids),
+            "table_included": True,
+            "obstacles_included": len(boxes),
+            "tool_included": False,
+            "why_tool_excluded": (
+                "the tool is the grasp target, so the hand must reach it; "
+                "contact with it is judged by physics during execution"
+            ),
+            "attached_object_modelled": False,
+        }
     planner_cfg = MotionPlannerCfg.create(
         robot=args.robot,
-        scene_model=SceneCfg(cuboid=cuboids),
+        scene_model=scene_model,
         device_cfg=device_cfg,
         num_ik_seeds=args.num_ik_seeds,
         num_trajopt_seeds=args.num_trajopt_seeds,
@@ -141,7 +209,7 @@ def build_planner(args, scene, boxes):
     )
     planner = MotionPlanner(planner_cfg)
     planner.warmup(enable_graph=True, num_warmup_iterations=2)
-    return planner, device_cfg, len(cuboids)
+    return planner, device_cfg, world
 
 
 def plan_segment(planner, device_cfg, current_state, pose_base, max_attempts):
@@ -277,7 +345,7 @@ def main() -> int:
         import torch
         from curobo._src.state.state_joint import JointState
 
-        planner, device_cfg, obstacle_count = build_planner(args, scene, boxes)
+        planner, device_cfg, world = build_planner(args, scene, boxes)
         start_positions = select_named_joint_positions(
             capture["joint_names"], capture["joint_positions"], planner.joint_names
         ).astype(np.float32)
@@ -362,17 +430,7 @@ def main() -> int:
                 "capture": str(args.capture),
                 "tool_pose_source": "simulator ground truth (Phase 0 stands in for perception)",
             },
-            "world_model": {
-                "cuboids": obstacle_count,
-                "table_included": True,
-                "obstacles_included": len(boxes),
-                "tool_included": False,
-                "why_tool_excluded": (
-                    "the tool is the grasp target, so the hand must reach it; "
-                    "contact with it is judged by physics during execution"
-                ),
-                "attached_object_modelled": False,
-            },
+            "world_model": world,
             "waypoints": hv.describe_waypoints(waypoints),
             "grasp": {
                 "part_under_the_fingertips": grasped_part,

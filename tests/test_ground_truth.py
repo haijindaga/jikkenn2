@@ -241,3 +241,76 @@ def test_pose_in_frame_round_trips():
 def test_rotation_between_identical_poses_is_zero():
     pose = gt.tool_pose_matrix([0.1, 0.2, 0.3], YAW_90_QUAT)
     assert gt.rotation_between_deg(pose, pose) == pytest.approx(0.0, abs=1e-9)
+
+
+def _point_image(points):
+    """Pack a list of world points into a 1 x N x 3 point map."""
+    return np.asarray(points, dtype=np.float64).reshape(1, -1, 3)
+
+
+def test_tool_mask_marks_points_on_the_tool_only():
+    tool = pose((0.5, 0.1, 0.05))
+    head = np.array(DEFAULT_SCENE.part("head").center_m) + np.array([0.5, 0.1, 0.05])
+    handle = np.array(DEFAULT_SCENE.part("handle").center_m) + np.array([0.5, 0.1, 0.05])
+    elsewhere = np.array([0.8, -0.3, 0.05])
+
+    mask = gt.points_in_tool_mask(
+        tool, DEFAULT_SCENE, _point_image([head, handle, elsewhere]), margin_m=0.0
+    )
+    assert list(mask[0]) == [True, True, False]
+
+
+def test_tool_mask_follows_a_rotated_tool():
+    turned = pose((0.5, 0.1, 0.05), YAW_90_QUAT)
+    head_local = np.array(DEFAULT_SCENE.part("head").center_m)
+    head_world = turned[:3, :3] @ head_local + turned[:3, 3]
+    stale = np.array(DEFAULT_SCENE.part("head").center_m) + np.array([0.5, 0.1, 0.05])
+
+    mask = gt.points_in_tool_mask(
+        turned, DEFAULT_SCENE, _point_image([head_world, stale]), margin_m=0.0
+    )
+    assert list(mask[0]) == [True, False]
+
+
+def test_tool_mask_margin_widens_the_footprint():
+    tool = pose((0.5, 0.1, 0.05))
+    head = DEFAULT_SCENE.part("head")
+    _, maximum = head.aabb_local_m()
+    just_outside = np.asarray(maximum) + np.array([0.005, 0.0, 0.0]) + np.array([0.5, 0.1, 0.05])
+
+    tight = gt.points_in_tool_mask(
+        tool, DEFAULT_SCENE, _point_image([just_outside]), margin_m=0.0
+    )
+    loose = gt.points_in_tool_mask(
+        tool, DEFAULT_SCENE, _point_image([just_outside]), margin_m=0.01
+    )
+    assert tight[0][0] is np.True_ or bool(tight[0][0]) is False
+    assert bool(loose[0][0]) is True
+
+
+def test_tool_mask_ignores_invalid_points():
+    tool = pose((0.5, 0.1, 0.05))
+    mask = gt.points_in_tool_mask(
+        tool,
+        DEFAULT_SCENE,
+        _point_image([[np.nan, np.nan, np.nan], [np.inf, 0.0, 0.0]]),
+    )
+    assert not mask.any()
+
+
+def test_tool_mask_keeps_the_image_shape():
+    tool = pose((0.5, 0.1, 0.05))
+    points = np.full((4, 7, 3), np.nan)
+    assert gt.points_in_tool_mask(tool, DEFAULT_SCENE, points).shape == (4, 7)
+
+
+def test_tool_mask_rejects_a_non_image_point_array():
+    with pytest.raises(ValueError, match="HxWx3"):
+        gt.points_in_tool_mask(pose((0, 0, 0)), DEFAULT_SCENE, np.zeros((5, 3)))
+
+
+def test_tool_mask_rejects_a_negative_margin():
+    with pytest.raises(ValueError, match="margin_m"):
+        gt.points_in_tool_mask(
+            pose((0, 0, 0)), DEFAULT_SCENE, np.zeros((1, 1, 3)), margin_m=-0.01
+        )
