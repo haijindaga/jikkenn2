@@ -122,7 +122,22 @@ for arr in arrangements: 復元 → capture → plan → execute → score   ←
 3. 選択 — Stage ツリーで `/World/Tools/proxy_tool` を選ぶか、ビューポートで直接クリック
 4. 移動 — `W` = 移動ギズモ、`E` = 回転ギズモ。数値入力は Property パネルの Transform。**Play は押さない**
 5. 緑の中に置く（3 節のオーバーレイ）。赤の上に置いた配置は保存時に警告
-6. ターミナルに戻って `Enter`。物理を数フレーム進めて安定させ、確定 pose を JSON に書き出す
+6. ターミナルに戻って `Enter`。現在の pose が `arrangements/arr_NNN.json` に書き出される。
+   `l` で保存せずに一覧、`q` で終了。**1 回の GUI セッションで何個でも保存できる**
+
+保存時に各オブジェクトの判定が 1 行ずつ出る。
+
+```
+  proxy_tool     (+0.450, +0.150, +0.023)  OK
+  obstacle_a     (+0.450, -0.180, +0.050)  OK
+  obstacle_b     (+1.600, +0.280, +0.060)  WARN: off table, outside reach band (1.60 m)
+SAVED /home/suzutaro/projects/jikkenn2/arrangements/arr_001.json  [1 this session]
+```
+
+`WARN` が付いた配置も保存はされる（意図的に届かない配置を作りたい場合があるため）。
+記録されるのは**人が置いた姿勢そのもの**で、物理の安定化は行わない。落ち着かせるのは
+`capture_scene.py` の役目で、そちらが安定後の姿勢を試行データと一緒に記録し、ズレが
+大きければ警告する。こうすると対話ツール側で物理を回さずに済み、GUI が固まらない。
 
 ---
 
