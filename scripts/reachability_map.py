@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robot", default="franka.yml")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--num-ik-seeds", type=int, default=16)
-    parser.add_argument("--chunk-size", type=int, default=1024)
+    parser.add_argument("--chunk-size", type=int, default=512)
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -86,13 +86,16 @@ def solve_ik_batch(poses: np.ndarray, args: argparse.Namespace, scene) -> np.nda
 
     from jikkenn2.reachability import PANDA_FINGERTIP_DEPTH_M  # noqa: F401
 
+    import inspect
+
     device_cfg = DeviceCfg(device=torch.device(args.device), dtype=torch.float32)
     table = Cuboid(
         name="table",
         pose=[*scene.table_center_m, 1.0, 0.0, 0.0, 0.0],
         dims=list(scene.table_size_m),
     )
-    planner_cfg = MotionPlannerCfg.create(
+    batch = int(args.chunk_size)
+    create_kwargs = dict(
         robot=args.robot,
         scene_model=SceneCfg(cuboid=[table]),
         device_cfg=device_cfg,
@@ -102,6 +105,21 @@ def solve_ik_batch(poses: np.ndarray, args: argparse.Namespace, scene) -> np.nda
         use_cuda_graph=False,
         random_seed=123,
     )
+    # The solver caps the batch it will accept, and the cap defaults to 1.
+    accepted = inspect.signature(MotionPlannerCfg.create).parameters
+    if "max_batch_size" in accepted:
+        create_kwargs["max_batch_size"] = batch
+    planner_cfg = MotionPlannerCfg.create(**create_kwargs)
+    if "max_batch_size" not in accepted:
+        try:
+            planner_cfg.ik_solver_config.max_batch_size = batch
+        except Exception as error:
+            raise RuntimeError(
+                "cannot raise the IK batch limit: MotionPlannerCfg.create does not "
+                f"take max_batch_size (it takes {sorted(accepted)}) and "
+                f"ik_solver_config.max_batch_size is not settable ({error}). "
+                "Run with --chunk-size 1 to fall back to one pose per call."
+            ) from error
     solver = IKSolver(planner_cfg.ik_solver_config, None)
 
     from jikkenn2.geometry import quaternion_wxyz_from_rotation_matrix
@@ -112,13 +130,25 @@ def solve_ik_batch(poses: np.ndarray, args: argparse.Namespace, scene) -> np.nda
     positions = poses[:, :3, 3]
 
     success = np.zeros(len(poses), dtype=bool)
-    for start in range(0, len(poses), args.chunk_size):
-        stop = min(start + args.chunk_size, len(poses))
+    for start in range(0, len(poses), batch):
+        stop = min(start + batch, len(poses))
+        # Pad the final chunk so every call uses the batch the solver was built
+        # for; the padded results are discarded.
+        pad = batch - (stop - start)
+        chunk_positions = positions[start:stop]
+        chunk_quaternions = quaternions[start:stop]
+        if pad:
+            chunk_positions = np.concatenate(
+                [chunk_positions, np.repeat(chunk_positions[:1], pad, axis=0)]
+            )
+            chunk_quaternions = np.concatenate(
+                [chunk_quaternions, np.repeat(chunk_quaternions[:1], pad, axis=0)]
+            )
         position = torch.from_numpy(
-            positions[start:stop].astype(np.float32)
+            chunk_positions.astype(np.float32)
         ).to(device_cfg.device)
         quaternion = torch.from_numpy(
-            quaternions[start:stop].astype(np.float32)
+            chunk_quaternions.astype(np.float32)
         ).to(device_cfg.device)
         goals = GoalToolPose(
             tool_frames=["panda_hand"],
@@ -126,9 +156,8 @@ def solve_ik_batch(poses: np.ndarray, args: argparse.Namespace, scene) -> np.nda
             quaternion=quaternion[:, None, None, None, :],
         )
         result = solver.solve_pose(goals, return_seeds=1)
-        solved = result.success
-        solved = solved.detach().cpu().numpy().reshape(stop - start, -1).any(axis=1)
-        success[start:stop] = solved
+        solved = result.success.detach().cpu().numpy().reshape(batch, -1).any(axis=1)
+        success[start:stop] = solved[: stop - start]
         print(
             f"  ik {stop}/{len(poses)}  solved so far {int(success[:stop].sum())}",
             flush=True,
@@ -189,11 +218,14 @@ def main() -> int:
             ),
         }
         try:
+            # Deliberately not reachability_check.json: a failed run must never
+            # destroy the last good map.
             args.output.mkdir(parents=True, exist_ok=True)
-            (args.output / "reachability_check.json").write_text(
+            failure_path = args.output / "reachability_failure.json"
+            failure_path.write_text(
                 json.dumps(failure, indent=2) + "\n", encoding="utf-8"
             )
-            print(f"failure report: {args.output / 'reachability_check.json'}", file=sys.stderr)
+            print(f"failure report: {failure_path}", file=sys.stderr)
         except OSError:
             print("could not write a failure report either", file=sys.stderr)
         print(traceback.format_exc(), file=sys.stderr, flush=True)
@@ -218,6 +250,12 @@ def _draw_saved_map(args: argparse.Namespace) -> int:
             f"no computed map in {args.output}; run without --overlay-only first"
         )
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("status") != "success" or "grid" not in report:
+        raise ValueError(
+            f"{report_path} is not a completed map "
+            f"(status={report.get('status')!r}); recompute it with "
+            "'python scripts/reachability_map.py' before drawing"
+        )
     labels = np.load(labels_path, allow_pickle=True)
     grid = tabletop_grid(
         scene,
