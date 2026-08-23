@@ -117,7 +117,7 @@ for arr in arrangements: 復元 → capture → plan → execute → score   ←
 
 ### Isaac Sim GUI で覚えること
 
-1. `python scripts/arrange_scene.py --gui --scene assets/scene.usd` で GUI 起動、ステージを開いた状態で待機
+1. `python scripts/arrange_scene.py --scene assets/scene.usd` で GUI 起動、ステージを開いた状態で待機
 2. 視点 — 右ドラッグ = 回転、中ドラッグ = 平行移動、ホイール = ズーム、選択して `F` で寄る
 3. 選択 — Stage ツリーで `/World/Tools/proxy_tool` を選ぶか、ビューポートで直接クリック
 4. 移動 — `W` = 移動ギズモ、`E` = 回転ギズモ。数値入力は Property パネルの Transform。**Play は押さない**
@@ -189,7 +189,7 @@ Phase 0 の道具は **proxy tool（柄の箱 + 頭の箱）**。実メッシュ
 | `validate_scene.py` | — | 画角・レイアウト・クリアランスの機械判定 | 済 |
 | `build_scene_usd.py` | A | `assets/scene.usd` を生成 | 済（USD 部分は検証済み） |
 | `reachability_map.py` | B | 到達可能領域の計算とオーバーレイ | 未 |
-| `arrange_scene.py` | A | GUI 起動 → 人が配置 → arrangement 保存 | 未 |
+| `arrange_scene.py` | A | GUI 起動 → 人が配置 → arrangement 保存 | 済（ロジックは検証済み） |
 | `capture_scene.py` | A | 配置復元 → RGB-D・関節・GT 姿勢の保存 | 未 |
 | `plan_handover.py` | B | GT 姿勢 → 把持姿勢 → cuRobo ESDF → 軌道 | 未 |
 | `execute_handover.py` | A | 軌道実行・把持・持ち上げ・handover・動画 | 未 |
@@ -211,8 +211,7 @@ python scripts/reachability_map.py --scene assets/scene.usd \
 
 # 配置する（人手） ─ 置いて Enter、を 20 回
 conda activate env_isaaclab
-python scripts/arrange_scene.py --gui --scene assets/scene.usd \
-       --overlay assets/overlay_reach.usd --output arrangements/
+python scripts/arrange_scene.py --scene assets/scene.usd --output arrangements/
 
 # 1 試行
 python scripts/capture_scene.py --scene assets/scene.usd \
