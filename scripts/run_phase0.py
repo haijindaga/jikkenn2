@@ -113,8 +113,10 @@ def main() -> int:
     unknown = [stage for stage in stages if stage not in STAGES]
     if unknown:
         raise SystemExit(f"unknown stages: {unknown}; expected from {STAGES}")
-    # Planning against the measured map only makes sense if a map was built.
+    # Planning against a measured map or proposed grasps only makes sense if
+    # those stages ran.
     use_map = "map" in stages
+    use_grasps = "grasp" in stages
 
     interpreters = Interpreters(
         isaac=args.isaac_python.expanduser(),
@@ -149,7 +151,8 @@ def main() -> int:
     print(
         f"phase {args.phase}: {len(arrangements)} arrangement(s), "
         f"stages: {', '.join(stages)}"
-        + ("  [planning against the measured map]" if use_map else ""),
+        + ("  [measured map]" if use_map else "")
+        + ("  [proposed grasps]" if use_grasps else ""),
         flush=True,
     )
 
@@ -171,6 +174,7 @@ def main() -> int:
                 trial=trial,
                 scene=args.scene,
                 use_map=use_map,
+                use_grasps=use_grasps,
             )
             result = run_stage(command, trial / f"{stage}.log", args.timeout)
             row["stages"][stage] = result
@@ -193,7 +197,10 @@ def main() -> int:
     summary = batch_summary(rows, scores)
     summary["phase"] = args.phase
     summary["stages"] = stages
-    summary["planned_against"] = "measured_esdf" if use_map else "ground_truth_boxes"
+    summary["planned_against"] = {
+        "world": "measured_esdf" if use_map else "ground_truth_boxes",
+        "grasp": "graspgenx" if use_grasps else "ground_truth_tool_pose",
+    }
     summary_path = args.output / "phase0_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 

@@ -14,22 +14,27 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-STAGES = ("capture", "map", "plan", "execute", "score")
+STAGES = ("capture", "segment", "grasp", "map", "plan", "execute", "score")
 
 #: Which interpreter each stage needs.
 STAGE_ENVIRONMENT = {
     "capture": "isaac",
+    "segment": "isaac",
+    "grasp": "curobo",
     "map": "curobo",
     "plan": "curobo",
     "execute": "isaac",
     "score": "plain",
 }
 
-#: What each phase replaces. Phase 0 plans against the true boxes; Phase 1
-#: builds the world from the captured depth instead, and nothing else changes.
+#: What each phase replaces, one layer at a time.
+#: 0 -- true boxes for the world, the tool's true pose for the grasp.
+#: 1 -- the world becomes an ESDF measured from the camera.
+#: 2 -- the grasp becomes one proposed from a segmented point cloud.
 PHASE_STAGES = {
     0: ("capture", "plan", "execute", "score"),
     1: ("capture", "map", "plan", "execute", "score"),
+    2: ("capture", "segment", "grasp", "map", "plan", "execute", "score"),
 }
 
 ARRANGEMENT_PATTERN = re.compile(r"^arr_(\d+)\.json$")
@@ -87,11 +92,13 @@ def stage_command(
     trial: str | Path,
     scene: str | Path,
     use_map: bool = False,
+    use_grasps: bool = False,
 ) -> list[str]:
     """The argv for one stage of one trial.
 
-    ``use_map`` is what makes a run Phase 1: the planner is pointed at the
-    measured ESDF instead of the ground-truth boxes.
+    ``use_map`` is what makes a run Phase 1 and ``use_grasps`` what makes it
+    Phase 2: the planner is pointed at the measured ESDF, and at the grasps a
+    proposer suggested, instead of at the ground truth.
     """
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r}; expected one of {STAGES}")
@@ -106,12 +113,18 @@ def stage_command(
             "--arrangement", str(arrangement),
             "--output", trial,
         ]
+    if stage == "segment":
+        return [python, str(scripts / "segment_tool.py"), "--capture", trial]
+    if stage == "grasp":
+        return [python, str(scripts / "propose_grasps.py"), "--capture", trial]
     if stage == "map":
         return [python, str(scripts / "build_map.py"), "--capture", trial]
     if stage == "plan":
         command = [python, str(scripts / "plan_handover.py"), "--capture", trial]
         if use_map:
             command += ["--map", str(Path(trial) / "map")]
+        if use_grasps:
+            command += ["--grasps", str(Path(trial) / "grasps")]
         return command
     if stage == "execute":
         return [

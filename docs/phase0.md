@@ -255,6 +255,8 @@ Phase 2 で実メッシュに替えると重心はアセット側の性質にな
 | `run_phase0.py` | — | arrangements をループ（各段を別プロセスで起動）| 済 |
 | `build_map.py` | B | 撮影 depth → cuRobo ESDF ＋ 受け入れテスト（Phase 1）| 済 |
 | `view_map.py` | B | 地図をロボットと重ねて Viser で目視（Phase 1）| 済 |
+| `segment_tool.py` | A | SAM3 で道具を切り出す（Phase 2）| 済 |
+| `propose_grasps.py` | B | GraspGenX に把持候補を出させ、危険部位のものを選ぶ（Phase 2）| 済 |
 
 ### コマンド列
 

@@ -199,3 +199,40 @@ def test_a_tool_standing_on_end_still_gets_a_valid_grasp():
     rotation = grasp[:3, :3]
     assert np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-9)
     assert grasp[:3, 2] == pytest.approx([0.0, 0.0, -1.0], abs=1e-12)
+
+
+def test_a_supplied_grasp_drives_the_whole_sequence(resting_tool):
+    """From Phase 2 the grasp comes from a proposer, not from the tool pose."""
+    supplied = hv.grasp_hand_pose(resting_tool, DEFAULT_SCENE)
+    supplied[:3, 3] += np.array([0.01, -0.005, 0.0])  # as a proposer might differ
+    waypoints = hv.waypoints_from_grasp(supplied, resting_tool, DEFAULT_SCENE)
+    assert waypoints["grasp"] == pytest.approx(supplied)
+    assert waypoints["pregrasp"][2, 3] == pytest.approx(
+        supplied[2, 3] + hv.DEFAULT_APPROACH_OFFSET_M
+    )
+    assert waypoints["lift"][2, 3] == pytest.approx(supplied[2, 3] + hv.DEFAULT_LIFT_M)
+
+
+def test_a_supplied_grasp_still_lands_the_tool_on_the_handover_pose(resting_tool):
+    supplied = hv.grasp_hand_pose(resting_tool, DEFAULT_SCENE)
+    supplied[:3, 3] += np.array([0.01, -0.005, 0.0])
+    waypoints = hv.waypoints_from_grasp(supplied, resting_tool, DEFAULT_SCENE)
+    T_tool_hand = np.linalg.inv(resting_tool) @ supplied
+    carried = waypoints["handover"] @ np.linalg.inv(T_tool_hand)
+    assert carried == pytest.approx(waypoints["target_tool"], abs=1e-9)
+    metrics = gt.handover_orientation(carried, DEFAULT_SCENE)
+    assert metrics["safe_axis_to_human_deg"] < 30.0
+
+
+def test_the_two_entry_points_agree_when_the_grasp_is_the_computed_one(resting_tool):
+    computed = hv.plan_waypoints(resting_tool, DEFAULT_SCENE)
+    supplied = hv.waypoints_from_grasp(
+        hv.grasp_hand_pose(resting_tool, DEFAULT_SCENE), resting_tool, DEFAULT_SCENE
+    )
+    for name in computed:
+        assert supplied[name] == pytest.approx(computed[name], abs=1e-12), name
+
+
+def test_a_badly_shaped_grasp_is_refused(resting_tool):
+    with pytest.raises(ValueError, match="4x4"):
+        hv.waypoints_from_grasp(np.eye(3), resting_tool, DEFAULT_SCENE)

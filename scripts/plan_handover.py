@@ -45,6 +45,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tool", type=Path, default=REPO_ROOT / "assets" / "tools" / "proxy_tool.json")
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
+        "--grasps",
+        type=Path,
+        default=None,
+        help="Phase 2: use grasps proposed by GraspGenX instead of the tool pose",
+    )
+    parser.add_argument(
+        "--max-grasp-candidates",
+        type=int,
+        default=8,
+        help="How many proposed grasps to try before giving up",
+    )
+    parser.add_argument(
         "--map",
         type=Path,
         default=None,
@@ -112,6 +124,24 @@ def world_obstacles(settled: dict, scene) -> list[dict]:
 
 def to_robot_base(pose_world: np.ndarray, T_world_robot_base: np.ndarray) -> np.ndarray:
     return np.linalg.inv(T_world_robot_base) @ pose_world
+
+
+def proposed_grasps(grasp_dir: Path, limit: int) -> tuple[np.ndarray, dict]:
+    """Load the grasps that were chosen as landing on the dangerous part."""
+    report_path = grasp_dir / "grasp_check.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("status") != "success":
+        raise ValueError(
+            f"{report_path} reports status={report.get('status')!r}; refusing to "
+            "plan from grasps that failed their own checks"
+        )
+    poses = np.load(grasp_dir / "selected_hand_poses_world.npy")
+    if len(poses) == 0:
+        raise ValueError(
+            "no proposed grasp landed on the part to be grasped; there is nothing "
+            "to plan"
+        )
+    return poses[: max(1, limit)], report
 
 
 def measured_world(map_dir: Path, device):
@@ -327,18 +357,35 @@ def main() -> int:
         annotation = json.loads(args.tool.read_text(encoding="utf-8"))
         tool_pose = np.asarray(capture["tool_pose_world"], dtype=np.float64)
 
-        waypoints = hv.plan_waypoints(
-            tool_pose, scene, approach_offset_m=args.approach_offset, lift_m=args.lift
-        )
-        # The grasp must actually be on the part we claim to grasp; check it
-        # here rather than discovering it from a bad score later.
-        fingertip = (
-            waypoints["grasp"][:3, 3]
-            + waypoints["grasp"][:3, 2] * hv.PANDA_FINGERTIP_DEPTH_M
-        )
-        grasped_part = gt.part_containing(tool_pose, scene, fingertip)
-        planned_handover = gt.handover_orientation(waypoints["target_tool"], scene)
+        # Phase 0 and 1 compute the grasp from the tool's pose; Phase 2 takes it
+        # from a proposer and tries the ranked candidates in turn, because a
+        # grasp being good is no guarantee an arm can reach it.
+        if args.grasps is not None:
+            grasp_poses, grasp_report = proposed_grasps(
+                args.grasps, args.max_grasp_candidates
+            )
+            grasp_source = {
+                "source": "graspgenx",
+                "directory": str(args.grasps),
+                "candidates_available": int(
+                    grasp_report["selection"]["counts"]["on_the_intended_part"]
+                ),
+                "candidates_to_try": int(len(grasp_poses)),
+                "frame_check": grasp_report["frame_check"],
+            }
+        else:
+            grasp_poses = np.asarray(
+                [hv.grasp_hand_pose(tool_pose, scene)], dtype=np.float64
+            )
+            grasp_report = None
+            grasp_source = {
+                "source": "ground_truth_tool_pose",
+                "candidates_to_try": 1,
+            }
 
+        planned_handover = gt.handover_orientation(
+            hv.handover_tool_pose(scene), scene
+        )
         boxes = world_obstacles(capture["settled"], scene)
         T_world_robot_base = np.asarray(capture["T_world_robot_base"], dtype=np.float64)
 
@@ -354,36 +401,92 @@ def main() -> int:
             joint_names=list(planner.joint_names),
         )
 
-        segments = {}
-        trajectories = {}
-        reached = []
-        plan_joint_names: tuple[str, ...] = tuple(planner.joint_names)
-        for name in SEGMENTS:
-            pose_base = to_robot_base(waypoints[name], T_world_robot_base)
-            success, positions, column_names, diagnostics = plan_segment(
-                planner, device_cfg, current_state, pose_base, args.max_attempts
-            )
-            segments[name] = diagnostics
-            if not success:
-                print(f"segment {name}: FAILED", flush=True)
-                break
-            trajectories[name] = positions
-            plan_joint_names = column_names
-            reached.append(name)
-            print(
-                f"segment {name}: {diagnostics['waypoints']} waypoints "
-                f"in {diagnostics['wall_time_s']:.2f}s",
-                flush=True,
-            )
-            # The plan can carry joints the planner does not solve, so the next
-            # start state is selected by name, never by column position.
-            final = select_named_joint_positions(
-                column_names, positions[-1], planner.joint_names
-            ).astype(np.float32)
-            current_state = JointState.from_position(
-                torch.from_numpy(final).to(device_cfg.device).unsqueeze(0),
+        def start_state():
+            return JointState.from_position(
+                torch.from_numpy(start_positions).to(device_cfg.device).unsqueeze(0),
                 joint_names=list(planner.joint_names),
             )
+
+        segments: dict = {}
+        trajectories: dict = {}
+        reached: list[str] = []
+        waypoints: dict = {}
+        plan_joint_names: tuple[str, ...] = tuple(planner.joint_names)
+        attempts = []
+        chosen_grasp_index = None
+
+        for candidate_index, grasp_pose in enumerate(grasp_poses):
+            candidate_waypoints = hv.waypoints_from_grasp(
+                grasp_pose,
+                tool_pose,
+                scene,
+                approach_offset_m=args.approach_offset,
+                lift_m=args.lift,
+            )
+            current_state = start_state()
+            candidate_segments: dict = {}
+            candidate_trajectories: dict = {}
+            candidate_reached: list[str] = []
+            for name in SEGMENTS:
+                pose_base = to_robot_base(candidate_waypoints[name], T_world_robot_base)
+                success, positions, column_names, diagnostics = plan_segment(
+                    planner, device_cfg, current_state, pose_base, args.max_attempts
+                )
+                candidate_segments[name] = diagnostics
+                if not success:
+                    break
+                candidate_trajectories[name] = positions
+                plan_joint_names = column_names
+                candidate_reached.append(name)
+                # The plan can carry joints the planner does not solve, so the
+                # next start state is selected by name, never by column position.
+                final = select_named_joint_positions(
+                    column_names, positions[-1], planner.joint_names
+                ).astype(np.float32)
+                current_state = JointState.from_position(
+                    torch.from_numpy(final).to(device_cfg.device).unsqueeze(0),
+                    joint_names=list(planner.joint_names),
+                )
+
+            attempts.append(
+                {
+                    "candidate": candidate_index,
+                    "segments_reached": list(candidate_reached),
+                    "complete": len(candidate_reached) == len(SEGMENTS),
+                }
+            )
+            print(
+                f"grasp candidate {candidate_index}: reached "
+                f"{'/'.join(candidate_reached) or 'nothing'}",
+                flush=True,
+            )
+            # Keep the best attempt so a total failure still says how far it got.
+            if len(candidate_reached) > len(reached):
+                segments, trajectories = candidate_segments, candidate_trajectories
+                reached, waypoints = candidate_reached, candidate_waypoints
+                chosen_grasp_index = candidate_index
+            if len(candidate_reached) == len(SEGMENTS):
+                break
+
+        if not waypoints:
+            waypoints = hv.waypoints_from_grasp(
+                grasp_poses[0],
+                tool_pose,
+                scene,
+                approach_offset_m=args.approach_offset,
+                lift_m=args.lift,
+            )
+            chosen_grasp_index = 0
+
+        # The grasp must be on the part we claim to grasp; check the one that
+        # was actually chosen, not the one that was intended.
+        fingertip = (
+            waypoints["grasp"][:3, 3]
+            + waypoints["grasp"][:3, 2] * hv.PANDA_FINGERTIP_DEPTH_M
+        )
+        grasped_part = gt.part_containing(tool_pose, scene, fingertip)
+        grasp_source["chosen_candidate"] = chosen_grasp_index
+        grasp_source["candidates_tried"] = len(attempts)
 
         for name, positions in trajectories.items():
             np.save(output / f"trajectory_{name}.npy", positions)
@@ -428,9 +531,15 @@ def main() -> int:
             },
             "inputs": {
                 "capture": str(args.capture),
-                "tool_pose_source": "simulator ground truth (Phase 0 stands in for perception)",
+                "tool_pose_source": (
+                    "simulator ground truth; still used to say which part is "
+                    "dangerous, which Phase 3 hands to SAM3"
+                ),
+                "grasp_pose_source": grasp_source["source"],
             },
             "world_model": world,
+            "grasp_source": grasp_source,
+            "grasp_attempts": attempts,
             "waypoints": hv.describe_waypoints(waypoints),
             "grasp": {
                 "part_under_the_fingertips": grasped_part,

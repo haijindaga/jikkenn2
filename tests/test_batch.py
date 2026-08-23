@@ -241,3 +241,59 @@ def test_the_planner_is_pointed_at_the_map_only_in_phase_one(interpreters, tmp_p
 def test_a_failed_map_abandons_that_trial():
     assert batch.classify_stage_result("map", 2) == ("error", False)
     assert batch.classify_stage_result("map", 0) == ("ok", True)
+
+
+def test_phase_two_segments_and_proposes_before_planning():
+    stages = batch.phase_stages(2)
+    assert stages.index("segment") < stages.index("grasp") < stages.index("plan")
+    assert stages.index("capture") < stages.index("segment")
+    assert "map" in stages, "phase 2 keeps the measured world from phase 1"
+
+
+def test_each_phase_adds_exactly_one_layer():
+    """One replacement per phase is the rule the whole plan rests on."""
+    zero, one, two = (set(batch.phase_stages(n)) for n in (0, 1, 2))
+    assert one - zero == {"map"}
+    assert two - one == {"segment", "grasp"}
+
+
+def test_segmentation_runs_where_sam3_lives(interpreters, tmp_path):
+    command = batch.stage_command(
+        "segment",
+        repo_root=tmp_path,
+        interpreters=interpreters,
+        arrangement=tmp_path / "arr_001.json",
+        trial=tmp_path / "out" / "arr_001",
+        scene=tmp_path / "scene.usd",
+    )
+    assert command[0] == str(interpreters.isaac)
+    assert command[1].endswith("segment_tool.py")
+
+
+def test_proposing_grasps_runs_where_graspgenx_lives(interpreters, tmp_path):
+    command = batch.stage_command(
+        "grasp",
+        repo_root=tmp_path,
+        interpreters=interpreters,
+        arrangement=tmp_path / "arr_001.json",
+        trial=tmp_path / "out" / "arr_001",
+        scene=tmp_path / "scene.usd",
+    )
+    assert command[0] == str(interpreters.curobo)
+    assert command[1].endswith("propose_grasps.py")
+
+
+def test_the_planner_is_given_the_grasps_only_in_phase_two(interpreters, tmp_path):
+    trial = tmp_path / "out" / "arr_001"
+    kwargs = dict(
+        repo_root=tmp_path,
+        interpreters=interpreters,
+        arrangement=tmp_path / "arr_001.json",
+        trial=trial,
+        scene=tmp_path / "scene.usd",
+    )
+    phase_one = batch.stage_command("plan", use_map=True, use_grasps=False, **kwargs)
+    phase_two = batch.stage_command("plan", use_map=True, use_grasps=True, **kwargs)
+    assert "--grasps" not in phase_one
+    assert "--map" in phase_one
+    assert phase_two[phase_two.index("--grasps") + 1] == str(trial / "grasps")

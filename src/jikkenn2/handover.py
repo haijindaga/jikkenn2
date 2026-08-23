@@ -149,6 +149,35 @@ def hand_pose_for_tool_pose(
     return target @ T_tool_hand
 
 
+def waypoints_from_grasp(
+    grasp: np.ndarray,
+    tool_pose: np.ndarray,
+    scene: SceneSpec,
+    *,
+    approach_offset_m: float = DEFAULT_APPROACH_OFFSET_M,
+    lift_m: float = DEFAULT_LIFT_M,
+) -> dict[str, np.ndarray]:
+    """The ordered sequence of hand poses, given a grasp that was chosen elsewhere.
+
+    From Phase 2 the grasp comes from a proposer rather than from the tool's
+    pose, so the rest of the trial is derived from whatever grasp is handed in.
+    """
+    grasp = np.asarray(grasp, dtype=np.float64)
+    if grasp.shape != (4, 4):
+        raise ValueError(f"grasp must be 4x4, got {grasp.shape}")
+    pregrasp = pregrasp_pose(grasp, approach_offset_m=approach_offset_m)
+    lift = lift_pose(grasp, lift_m=lift_m)
+    target_tool = handover_tool_pose(scene)
+    handover = hand_pose_for_tool_pose(target_tool, np.asarray(tool_pose), grasp)
+    return {
+        "pregrasp": pregrasp,
+        "grasp": grasp,
+        "lift": lift,
+        "handover": handover,
+        "target_tool": target_tool,
+    }
+
+
 def plan_waypoints(
     tool_pose: np.ndarray,
     scene: SceneSpec,
