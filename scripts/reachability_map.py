@@ -134,6 +134,40 @@ def solve_ik_batch(poses: np.ndarray, args: argparse.Namespace, scene) -> np.nda
 
 def main() -> int:
     args = parse_args()
+    try:
+        return _run(args)
+    except Exception as error:
+        # Same rule as build_scene_usd.py: never fail without leaving something
+        # to read.
+        import traceback
+
+        failure = {
+            "status": "failure",
+            "exception_type": type(error).__name__,
+            "message": str(error),
+            "traceback": traceback.format_exc(),
+            "overlay_path": str(args.overlay),
+            "output_path": str(args.output),
+            "hint": (
+                "A PermissionError here usually means the repository contains "
+                "root-owned files from an earlier sudo run. Check with "
+                "'ls -la assets/' and fix with "
+                "'sudo chown -R \"$USER\":\"$USER\" .' from the repository root."
+            ),
+        }
+        try:
+            args.output.mkdir(parents=True, exist_ok=True)
+            (args.output / "reachability_check.json").write_text(
+                json.dumps(failure, indent=2) + "\n", encoding="utf-8"
+            )
+            print(f"failure report: {args.output / 'reachability_check.json'}", file=sys.stderr)
+        except OSError:
+            print("could not write a failure report either", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr, flush=True)
+        raise
+
+
+def _run(args: argparse.Namespace) -> int:
     scene = DEFAULT_SCENE
 
     layout = scene.validation_report()

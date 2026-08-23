@@ -188,7 +188,23 @@ def write_overlay_usd(
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
-        destination.unlink()
+        try:
+            destination.unlink()
+        except OSError as error:
+            raise PermissionError(
+                f"cannot replace {destination}: {error}. If the repository contains "
+                'root-owned files from an earlier sudo run, fix with '
+                '"sudo chown -R \\"$USER\\":\\"$USER\\" ." at the repository root.'
+            ) from error
+    probe = destination.with_name(destination.name + ".writetest")
+    try:
+        probe.touch()
+        probe.unlink()
+    except OSError as error:
+        raise PermissionError(
+            f"cannot write into {destination.parent}: {error}. Check ownership with "
+            f'"ls -la {destination.parent}".'
+        ) from error
 
     nx, ny = grid.shape
     label_grid = np.asarray(labels).reshape(nx, ny)
@@ -215,6 +231,8 @@ def write_overlay_usd(
             colors.append(Gf.Vec3f(*LABEL_COLORS[str(label_grid[i, j])]))
 
     stage = Usd.Stage.CreateNew(str(destination))
+    if stage is None:
+        raise RuntimeError(f"USD refused to create {destination}")
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     root = UsdGeom.Xform.Define(stage, "/ReachabilityOverlay")
