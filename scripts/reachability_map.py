@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip cuRobo and write a grey overlay, to test rendering only",
     )
+    parser.add_argument(
+        "--overlay-only",
+        action="store_true",
+        help="Draw a map that was already computed; needs USD but not cuRobo",
+    )
     return parser.parse_args()
 
 
@@ -132,9 +137,37 @@ def solve_ik_batch(poses: np.ndarray, args: argparse.Namespace, scene) -> np.nda
     return success
 
 
+def _ensure_usd():
+    """Return a SimulationApp if one had to be started to make USD importable.
+
+    Isaac Sim only puts ``pxr`` on the path once SimulationApp has started, and
+    the cuRobo environment may not carry USD at all.  Booting Isaac headless is
+    acceptable here because drawing the overlay never touches the GPU solver.
+    """
+    try:
+        import pxr  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        return None
+    try:
+        from isaacsim import SimulationApp
+    except ImportError as error:
+        raise RuntimeError(
+            "no USD here: 'pxr' is not importable and Isaac Sim is not installed "
+            "in this environment. Either run this command in env_isaaclab, or "
+            "'pip install usd-core' into the environment you are using."
+        ) from error
+    print("starting Isaac Sim headless to obtain USD...", flush=True)
+    return SimulationApp({"headless": True})
+
+
 def main() -> int:
     args = parse_args()
+    simulation_app = None
     try:
+        if args.dry_run or args.overlay_only:
+            simulation_app = _ensure_usd()
         return _run(args)
     except Exception as error:
         # Same rule as build_scene_usd.py: never fail without leaving something
@@ -165,6 +198,49 @@ def main() -> int:
             print("could not write a failure report either", file=sys.stderr)
         print(traceback.format_exc(), file=sys.stderr, flush=True)
         raise
+    finally:
+        if simulation_app is not None:
+            simulation_app.close()
+
+
+def _draw_saved_map(args: argparse.Namespace) -> int:
+    """Draw the overlay from a map that was already computed.
+
+    The IK needs cuRobo and USD needs pxr, and there is no guarantee that one
+    environment has both.  Splitting the two means 16800 IK solutions are never
+    recomputed just to write a file.
+    """
+    scene = DEFAULT_SCENE
+    report_path = args.output / "reachability_check.json"
+    labels_path = args.output / "labels.npy"
+    if not report_path.is_file() or not labels_path.is_file():
+        raise FileNotFoundError(
+            f"no computed map in {args.output}; run without --overlay-only first"
+        )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    labels = np.load(labels_path, allow_pickle=True)
+    grid = tabletop_grid(
+        scene,
+        cell_size_m=report["grid"]["cell_size_m"],
+        grasp_height_m=report["grid"]["grasp_height_m"],
+    )
+    if list(grid.shape) != list(report["grid"]["shape"]):
+        raise ValueError(
+            f"saved grid {report['grid']['shape']} does not match the current "
+            f"scene_spec grid {list(grid.shape)}; recompute the map"
+        )
+    report["overlay"] = write_overlay_usd(args.overlay, scene, grid, labels)
+    report["overlay"]["status"] = "written"
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    counts = report["summary"]["counts"]
+    print(
+        "cells  free={free}  partial={partial}  blocked={blocked}  unknown={unknown}".format(
+            **counts
+        ),
+        flush=True,
+    )
+    print(f"OVERLAY WRITTEN -> {args.overlay}", flush=True)
+    return 0
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -173,6 +249,9 @@ def _run(args: argparse.Namespace) -> int:
     layout = scene.validation_report()
     if layout["status"] != "success":
         raise RuntimeError("scene layout is invalid; run scripts/validate_scene.py")
+
+    if args.overlay_only:
+        return _draw_saved_map(args)
 
     grasp_height = (
         default_grasp_height_m(scene) if args.grasp_height is None else args.grasp_height
@@ -206,7 +285,16 @@ def _run(args: argparse.Namespace) -> int:
     if success is not None:
         np.save(args.output / "ik_success.npy", success)
 
-    overlay = write_overlay_usd(args.overlay, scene, grid, labels)
+    # The map is the expensive part and is already on disk.  If USD is not
+    # importable here, keep the results and let --overlay-only draw them from
+    # an environment that has pxr.
+    try:
+        overlay = write_overlay_usd(args.overlay, scene, grid, labels)
+        overlay["status"] = "written"
+        overlay_ok = True
+    except RuntimeError as error:
+        overlay = {"status": "skipped", "path": str(args.overlay), "reason": str(error)}
+        overlay_ok = False
 
     report = {
         "status": "success",
@@ -247,7 +335,18 @@ def _run(args: argparse.Namespace) -> int:
         ),
         flush=True,
     )
-    print(f"overlay: {args.overlay}", flush=True)
+    if overlay_ok:
+        print(f"overlay: {args.overlay}", flush=True)
+    else:
+        print("", flush=True)
+        print("the map is saved, but the overlay was NOT drawn:", flush=True)
+        print(f"  {overlay['reason']}", flush=True)
+        print("draw it from an environment that has USD:", flush=True)
+        print(
+            f"  python scripts/reachability_map.py --overlay-only "
+            f"--output {args.output} --overlay {args.overlay}",
+            flush=True,
+        )
     print(f"REACHABILITY {backend.upper()} -> {report_path}", flush=True)
     return 0
 

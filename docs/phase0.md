@@ -91,6 +91,25 @@ Panda が完全に伸びると 1.19 m に達し、画角の上に出る。これ
 `--dry-run` を付けると cuRobo を一切呼ばず灰色のオーバーレイだけ出す。
 色を信じる前に「オーバーレイがビューポートに出るか」だけを切り分けるために使う。
 
+**環境の注意**: IK は cuRobo（環境 B）、オーバーレイ書き出しは USD（`pxr`）を要求する。
+`pxr` は Isaac Sim が SimulationApp を起動した後にしかパスに乗らないので、
+両方を同時に満たす環境は保証されない。そこで 2 段階に分けてある。
+
+- 環境 B に `pxr` が無ければ、IK 結果（`labels.npy`）だけ保存してオーバーレイはスキップし、
+  その旨をレポートに記録する。**16800 問を計算し直す必要はない**
+- `--overlay-only` は保存済みの結果から描画するだけ。cuRobo は要らない。
+  `pxr` が無ければ Isaac をヘッドレスで起動して USD を取りに行くので、環境 A でそのまま通る
+
+```bash
+source ~/GraspGenX/.venv/bin/activate
+python scripts/reachability_map.py                      # IK（描画は落ちても結果は残る）
+conda activate env_isaaclab
+python scripts/reachability_map.py --overlay-only       # 描画だけ
+```
+
+環境 B に `pip install usd-core` を入れれば 1 コマンドで済むが、既存の GraspGenX 環境を
+触ることになるので、まずは 2 段階で確認する。
+
 ---
 
 ## 4. 配置は人手、実行は自動

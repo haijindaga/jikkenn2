@@ -183,7 +183,17 @@ def write_overlay_usd(
     """
     from pathlib import Path
 
-    from pxr import Gf, Usd, UsdGeom, Vt
+    try:
+        from pxr import Gf, Usd, UsdGeom, Vt
+    except ImportError as error:  # pragma: no cover - environment dependent
+        raise RuntimeError(
+            "writing the overlay needs USD (the 'pxr' module), which is not "
+            "importable here. Isaac Sim only puts pxr on the path after "
+            "SimulationApp starts, and this process does not start it. Either "
+            "install the standalone wheel into the environment you are running "
+            "in ('pip install usd-core'), or compute the map here and draw it "
+            "later with 'python scripts/reachability_map.py --overlay-only'."
+        ) from error
 
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
