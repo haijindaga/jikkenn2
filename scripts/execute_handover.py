@@ -27,9 +27,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from jikkenn2.isaac_bridge import (  # noqa: E402
-    command_joint_targets,
     gripper_width_m,
     make_articulation,
+    make_target_commander,
     set_home_configuration,
 )
 from jikkenn2.joints import merge_named_joint_positions  # noqa: E402
@@ -179,6 +179,11 @@ def main() -> int:
         for _ in range(60):
             world.step(render=False)
 
+        # Resolve the target-setting API once; which one exists depends on the
+        # Isaac release and on whether this is a single or batched articulation.
+        command, command_method = make_target_commander(panda)
+        print(f"joint targets via {command_method}", flush=True)
+
         isaac_names = tuple(str(name) for name in panda.dof_names)
         recorder = Recorder(stage, scene, TOOL_PRIM_PATH)
         obstacles_before = recorder.obstacle_poses()
@@ -201,7 +206,7 @@ def main() -> int:
 
         def advance(target, render: bool) -> None:
             nonlocal step_index, saved_frames
-            command_joint_targets(panda, target)
+            command(target)
             world.step(render=render)
             step_index += 1
             if camera is not None and step_index % args.record_every == 0:
@@ -264,6 +269,7 @@ def main() -> int:
             "plan": str(plan_dir),
             "robot": {
                 "home_applied_with": home_method,
+                "joint_targets_via": command_method,
                 "joint_names": list(isaac_names),
                 "max_joint_tracking_error_rad": round(recorder.max_tracking_error_rad, 5),
             },

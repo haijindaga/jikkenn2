@@ -36,11 +36,78 @@ def make_articulation(prim_path: str, name: str):
     )
 
 
-def _target_setter(articulation):
-    for setter in ("set_joint_position_targets", "set_joint_positions_target"):
-        if hasattr(articulation, setter):
-            return setter
+#: Where ``ArticulationAction`` has lived across releases.
+ACTION_MODULES = (
+    "isaacsim.core.utils.types",
+    "omni.isaac.core.utils.types",
+)
+
+#: Setters offered by the batched articulation classes.
+DIRECT_TARGET_SETTERS = ("set_joint_position_targets", "set_joint_positions_target")
+
+
+def _articulation_action_class():
+    import importlib
+
+    for module_name in ACTION_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        action = getattr(module, "ArticulationAction", None)
+        if action is not None:
+            return action
     return None
+
+
+def make_target_commander(articulation):
+    """Return ``(command, method_name)`` for sending joint position targets.
+
+    The single-articulation wrapper takes an ``ArticulationAction`` through
+    ``apply_action``; the batched classes expose direct setters instead.  Which
+    one is present depends on the release, so resolve it once and report which
+    was used rather than assuming.
+    """
+    tried: list[str] = []
+
+    action_class = _articulation_action_class()
+    if action_class is not None and hasattr(articulation, "apply_action"):
+        def command(positions):
+            articulation.apply_action(
+                action_class(joint_positions=np.asarray(positions, dtype=np.float32))
+            )
+
+        return command, "apply_action(ArticulationAction)"
+    tried.append("apply_action(ArticulationAction)")
+
+    for setter in DIRECT_TARGET_SETTERS:
+        if hasattr(articulation, setter):
+            def command(positions, setter=setter):
+                getattr(articulation, setter)(np.asarray(positions, dtype=np.float32))
+
+            return command, setter
+        tried.append(setter)
+
+    if action_class is not None and hasattr(articulation, "get_articulation_controller"):
+        controller = articulation.get_articulation_controller()
+
+        def command(positions):
+            controller.apply_action(
+                action_class(joint_positions=np.asarray(positions, dtype=np.float32))
+            )
+
+        return command, "articulation_controller.apply_action"
+    tried.append("articulation_controller.apply_action")
+
+    raise RuntimeError(
+        "this articulation offers no way to send joint position targets; tried "
+        + ", ".join(tried)
+        + (
+            ". ArticulationAction was not importable either"
+            if action_class is None
+            else ""
+        )
+    )
 
 
 def set_home_configuration(articulation, home) -> str:
@@ -56,27 +123,20 @@ def set_home_configuration(articulation, home) -> str:
         used.append("set_joints_default_state")
     articulation.set_joint_positions(positions)
     used.append("set_joint_positions")
-    setter = _target_setter(articulation)
-    if setter is not None:
-        getattr(articulation, setter)(positions)
-        used.append(setter)
-    if len(used) < 2:
-        raise RuntimeError(
-            "could not pin the home configuration: this articulation exposes only "
-            f"{used}. Check the Isaac Sim API for setting drive targets."
-        )
+    command, method = make_target_commander(articulation)
+    command(positions)
+    used.append(method)
     return "+".join(used)
 
 
 def command_joint_targets(articulation, positions) -> None:
-    """Send one position command to every joint, in the articulation's order."""
-    setter = _target_setter(articulation)
-    if setter is None:
-        raise RuntimeError(
-            "this articulation exposes no joint position target setter; tried "
-            "set_joint_position_targets and set_joint_positions_target"
-        )
-    getattr(articulation, setter)(np.asarray(positions, dtype=np.float32))
+    """Send one position command to every joint, in the articulation's order.
+
+    Convenience for a single call; a replay loop should resolve the commander
+    once with :func:`make_target_commander`.
+    """
+    command, _ = make_target_commander(articulation)
+    command(positions)
 
 
 def gripper_width_m(joint_names, joint_positions) -> float:
