@@ -214,6 +214,21 @@ python scripts/score_trial.py --trial outputs/trial_001
 python scripts/run_phase0.py --arrangements arrangements/ --output outputs/phase0
 ```
 
+### Franka の USD が見つからないとき
+
+Isaac はリリースごとにマニピュレータのアセット位置を変える。`build_scene_usd.py` は
+既知のパスを順に試し、全部外れたら `/Isaac/Robots` を深さ 3 まで探索する。それでも
+駄目なら手で探す。
+
+```bash
+python scripts/build_scene_usd.py --list-assets                    # /Isaac/Robots
+python scripts/build_scene_usd.py --list-assets /Isaac/Robots/Franka
+python scripts/build_scene_usd.py --franka-usd "omniverse://.../franka.usd"
+```
+
+どこで落ちても `outputs/scene_build.json` に status・例外・traceback が残る。
+**何も残さずに落ちるスクリプトは書かない。**
+
 テストは Isaac も GPU も要らない（`usd-core` があれば USD の検証まで走る）。
 
 ```bash

@@ -31,13 +31,17 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from jikkenn2.scene_spec import DEFAULT_SCENE, SceneSpec  # noqa: E402
 
 
-# Isaac Sim moved the manipulator assets between releases.  Candidates are tried
-# in order; the first one that opens wins.  Override with --franka-usd.
+# Isaac Sim moved the manipulator assets between releases.  Known layouts are
+# probed first; if none exist the asset tree is searched.  Override with
+# --franka-usd to skip discovery entirely.
 FRANKA_CANDIDATE_PATHS = (
     "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+    "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka_instanceable.usd",
     "/Isaac/Robots/Franka/franka.usd",
     "/Isaac/Robots/Franka/franka_instanceable.usd",
 )
+ROBOT_SEARCH_ROOT = "/Isaac/Robots"
+ROBOT_SEARCH_DEPTH = 3
 
 OBSTACLE_LAYOUT = (
     ("obstacle_a", (0.45, -0.18, 0.05), (0.10, 0.10, 0.10), (0.85, 0.25, 0.15)),
@@ -62,6 +66,13 @@ def parse_args() -> argparse.Namespace:
         "--no-isaac",
         action="store_true",
         help="Author the stage without the robot reference (geometry smoke test only)",
+    )
+    parser.add_argument(
+        "--list-assets",
+        nargs="?",
+        const=ROBOT_SEARCH_ROOT,
+        metavar="PATH",
+        help="Print the Isaac asset directory at PATH and exit, to locate the robot USD",
     )
     return parser.parse_args()
 
@@ -294,11 +305,102 @@ def write_tool_annotation(scene: SceneSpec, path: Path) -> dict:
     return annotation
 
 
+def _url_exists(url: str) -> bool:
+    """Existence check that never raises.
+
+    ``Usd.Stage.Open`` throws on a missing URL instead of returning None, and it
+    downloads the whole asset just to answer the question.  Prefer the
+    Omniverse client stat, and fall back to opening the layer only if the client
+    is unavailable.
+    """
+    try:
+        import omni.client
+    except ImportError:
+        pass
+    else:
+        try:
+            result, _ = omni.client.stat(url)
+            return result == omni.client.Result.OK
+        except Exception:
+            return False
+    from pxr import Sdf
+
+    try:
+        return Sdf.Layer.FindOrOpen(url) is not None
+    except Exception:
+        return False
+
+
+def _list_url(url: str) -> list[tuple[str, bool]]:
+    """Return ``(name, is_folder)`` for one asset directory; empty if unreadable."""
+    try:
+        import omni.client
+    except ImportError:
+        return []
+    try:
+        result, entries = omni.client.list(url)
+    except Exception:
+        return []
+    if result != omni.client.Result.OK:
+        return []
+    listing = []
+    for entry in entries:
+        name = getattr(entry, "relative_path", "") or ""
+        flags = getattr(entry, "flags", 0)
+        is_folder = bool(int(flags) & int(getattr(omni.client.ItemFlags, "CAN_HAVE_CHILDREN", 0)))
+        listing.append((name, is_folder))
+    return sorted(listing)
+
+
+def _search_for_franka(root: str) -> tuple[str | None, list[str]]:
+    """Walk the asset tree for a Franka USD; also return what was seen."""
+    seen: list[str] = []
+    found: list[str] = []
+    frontier = [(f"{root}{ROBOT_SEARCH_ROOT}", 0)]
+    while frontier:
+        url, depth = frontier.pop(0)
+        listing = _list_url(url)
+        if not listing:
+            continue
+        seen.append(url)
+        for name, is_folder in listing:
+            child = f"{url}/{name}"
+            lowered = name.lower()
+            if is_folder:
+                if depth + 1 <= ROBOT_SEARCH_DEPTH:
+                    frontier.append((child, depth + 1))
+            elif lowered.startswith("franka") and lowered.endswith(".usd"):
+                found.append(child)
+    if not found:
+        return None, seen
+    found.sort(key=lambda url: (0 if url.lower().endswith("/franka.usd") else 1, len(url)))
+    return found[0], seen
+
+
+def _print_asset_listing(relative_path: str) -> int:
+    """Print one Isaac asset directory so the robot USD can be located by hand."""
+    from isaacsim.storage.native import get_assets_root_path
+
+    root = get_assets_root_path()
+    if root is None:
+        print("Isaac asset root is unavailable", file=sys.stderr)
+        return 1
+    url = f"{root}{relative_path}"
+    listing = _list_url(url)
+    print(f"asset root : {root}")
+    print(f"listing    : {url}")
+    if not listing:
+        print("  (empty or unreadable)")
+        return 1
+    for name, is_folder in listing:
+        print(f"  {'DIR ' if is_folder else 'FILE'}  {name}")
+    return 0
+
+
 def resolve_franka_url(explicit: str | None) -> str:
     if explicit:
         return explicit
     from isaacsim.storage.native import get_assets_root_path
-    from pxr import Usd
 
     root = get_assets_root_path()
     if root is None:
@@ -306,15 +408,27 @@ def resolve_franka_url(explicit: str | None) -> str:
             "Isaac asset root is unavailable. Pass --franka-usd with a full URL, "
             "or check the Omniverse asset connection."
         )
+    print(f"asset root: {root}", flush=True)
     for candidate in FRANKA_CANDIDATE_PATHS:
         url = f"{root}{candidate}"
-        if Usd.Stage.Open(url) is not None:
+        if _url_exists(url):
+            print(f"franka found at a known path: {url}", flush=True)
             return url
+
+    print("known paths missed; searching the asset tree...", flush=True)
+    url, seen = _search_for_franka(root)
+    if url is not None:
+        print(f"franka found by search: {url}", flush=True)
+        return url
+
+    listing = _list_url(f"{root}{ROBOT_SEARCH_ROOT}")
+    top_level = ", ".join(name for name, _ in listing) or "(none readable)"
     raise RuntimeError(
-        "No Franka USD found under "
-        f"{root}. Tried: {', '.join(FRANKA_CANDIDATE_PATHS)}. "
-        "Browse the asset root in the Isaac Sim Content browser and pass "
-        "--franka-usd explicitly."
+        f"""No Franka USD found under {root}{ROBOT_SEARCH_ROOT}.
+  tried known paths : {", ".join(FRANKA_CANDIDATE_PATHS)}
+  directories read  : {len(seen)}
+  top level entries : {top_level}
+Run with --list-assets to browse the tree, then pass the full URL with --franka-usd."""
     )
 
 
@@ -331,6 +445,9 @@ def main() -> int:
             + " (run scripts/validate_scene.py)"
         )
 
+    report_path = REPO_ROOT / "outputs" / "scene_build.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
     simulation_app = None
     if not args.no_isaac:
         from isaacsim import SimulationApp
@@ -340,10 +457,33 @@ def main() -> int:
     try:
         import pxr
 
+        if args.list_assets is not None:
+            return _print_asset_listing(args.list_assets)
+
         franka_url = None if args.no_isaac else resolve_franka_url(args.franka_usd)
         built = author_stage(pxr, scene, args.output, franka_url)
         verified = verify_stage(pxr, args.output, scene, expect_robot=franka_url is not None)
         annotation = write_tool_annotation(scene, args.tool_annotation)
+    except Exception as error:
+        # Always leave an artifact behind.  A failure that produces nothing to
+        # read is exactly how jikkenn1 lost time.
+        import traceback
+
+        failure = {
+            "status": "failure",
+            "stage": "isaac_asset_resolution_or_usd_authoring",
+            "exception_type": type(error).__name__,
+            "message": str(error),
+            "traceback": traceback.format_exc(),
+            "hint": (
+                "Run 'python scripts/build_scene_usd.py --list-assets' to browse the "
+                "Isaac asset tree, then pass the Franka USD with --franka-usd <url>."
+            ),
+        }
+        report_path.write_text(json.dumps(failure, indent=2) + "\n", encoding="utf-8")
+        print(traceback.format_exc(), file=sys.stderr, flush=True)
+        print(f"failure report: {report_path}", file=sys.stderr, flush=True)
+        raise
     finally:
         if simulation_app is not None:
             simulation_app.close()
@@ -359,8 +499,6 @@ def main() -> int:
             f"{args.output} to place the tool and obstacles"
         ),
     }
-    report_path = REPO_ROOT / "outputs" / "scene_build.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     print(json.dumps(report, indent=2))
