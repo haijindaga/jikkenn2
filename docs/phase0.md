@@ -253,6 +253,8 @@ Phase 2 で実メッシュに替えると重心はアセット側の性質にな
 | `execute_handover.py` | A | 軌道実行・把持・持ち上げ・handover・計測 | 済（Isaac 実行は未検証） |
 | `score_trial.py` | — | 6 項目の自動採点 | 済（Isaac も GPU も不要） |
 | `run_phase0.py` | — | arrangements をループ（各段を別プロセスで起動）| 済 |
+| `build_map.py` | B | 撮影 depth → cuRobo ESDF ＋ 受け入れテスト（Phase 1）| 済 |
+| `view_map.py` | B | 地図をロボットと重ねて Viser で目視（Phase 1）| 済 |
 
 ### コマンド列
 

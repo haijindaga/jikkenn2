@@ -14,14 +14,22 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-STAGES = ("capture", "plan", "execute", "score")
+STAGES = ("capture", "map", "plan", "execute", "score")
 
 #: Which interpreter each stage needs.
 STAGE_ENVIRONMENT = {
     "capture": "isaac",
+    "map": "curobo",
     "plan": "curobo",
     "execute": "isaac",
     "score": "plain",
+}
+
+#: What each phase replaces. Phase 0 plans against the true boxes; Phase 1
+#: builds the world from the captured depth instead, and nothing else changes.
+PHASE_STAGES = {
+    0: ("capture", "plan", "execute", "score"),
+    1: ("capture", "map", "plan", "execute", "score"),
 }
 
 ARRANGEMENT_PATTERN = re.compile(r"^arr_(\d+)\.json$")
@@ -78,8 +86,13 @@ def stage_command(
     arrangement: str | Path,
     trial: str | Path,
     scene: str | Path,
+    use_map: bool = False,
 ) -> list[str]:
-    """The argv for one stage of one trial."""
+    """The argv for one stage of one trial.
+
+    ``use_map`` is what makes a run Phase 1: the planner is pointed at the
+    measured ESDF instead of the ground-truth boxes.
+    """
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r}; expected one of {STAGES}")
     scripts = Path(repo_root) / "scripts"
@@ -93,8 +106,13 @@ def stage_command(
             "--arrangement", str(arrangement),
             "--output", trial,
         ]
+    if stage == "map":
+        return [python, str(scripts / "build_map.py"), "--capture", trial]
     if stage == "plan":
-        return [python, str(scripts / "plan_handover.py"), "--capture", trial]
+        command = [python, str(scripts / "plan_handover.py"), "--capture", trial]
+        if use_map:
+            command += ["--map", str(Path(trial) / "map")]
+        return command
     if stage == "execute":
         return [
             python,
@@ -103,6 +121,12 @@ def stage_command(
             "--capture", trial,
         ]
     return [python, str(scripts / "score_trial.py"), "--trial", trial, "--quiet"]
+
+
+def phase_stages(phase: int) -> tuple[str, ...]:
+    if phase not in PHASE_STAGES:
+        raise ValueError(f"unknown phase {phase}; expected one of {sorted(PHASE_STAGES)}")
+    return PHASE_STAGES[phase]
 
 
 def classify_stage_result(stage: str, returncode: int) -> tuple[str, bool]:

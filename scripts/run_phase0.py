@@ -29,12 +29,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from jikkenn2.batch import (  # noqa: E402
+    PHASE_STAGES,
     STAGES,
     Interpreters,
     arrangement_paths,
     batch_summary,
     classify_stage_result,
     completed_trials,
+    phase_stages,
     stage_command,
     trial_directory,
 )
@@ -52,9 +54,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--curobo-python", type=Path, default=DEFAULT_CUROBO_PYTHON)
     parser.add_argument("--plain-python", type=Path, default=Path(sys.executable))
     parser.add_argument(
+        "--phase",
+        type=int,
+        default=0,
+        choices=sorted(PHASE_STAGES),
+        help="0 plans against the true boxes, 1 against the measured map",
+    )
+    parser.add_argument(
         "--stages",
-        default=",".join(STAGES),
-        help="Comma-separated subset of stages to run, in order",
+        default=None,
+        help="Override the phase with an explicit comma-separated stage list",
     )
     parser.add_argument(
         "--resume",
@@ -97,10 +106,15 @@ def run_stage(command: list[str], log_path: Path, timeout: int) -> dict:
 
 def main() -> int:
     args = parse_args()
-    stages = [stage.strip() for stage in args.stages.split(",") if stage.strip()]
+    if args.stages:
+        stages = [stage.strip() for stage in args.stages.split(",") if stage.strip()]
+    else:
+        stages = list(phase_stages(args.phase))
     unknown = [stage for stage in stages if stage not in STAGES]
     if unknown:
         raise SystemExit(f"unknown stages: {unknown}; expected from {STAGES}")
+    # Planning against the measured map only makes sense if a map was built.
+    use_map = "map" in stages
 
     interpreters = Interpreters(
         isaac=args.isaac_python.expanduser(),
@@ -132,7 +146,12 @@ def main() -> int:
         arrangements = arrangements[: args.limit]
 
     args.output.mkdir(parents=True, exist_ok=True)
-    print(f"{len(arrangements)} arrangement(s), stages: {', '.join(stages)}", flush=True)
+    print(
+        f"phase {args.phase}: {len(arrangements)} arrangement(s), "
+        f"stages: {', '.join(stages)}"
+        + ("  [planning against the measured map]" if use_map else ""),
+        flush=True,
+    )
 
     rows = []
     scores = []
@@ -151,6 +170,7 @@ def main() -> int:
                 arrangement=arrangement,
                 trial=trial,
                 scene=args.scene,
+                use_map=use_map,
             )
             result = run_stage(command, trial / f"{stage}.log", args.timeout)
             row["stages"][stage] = result
@@ -171,6 +191,9 @@ def main() -> int:
         rows.append(row)
 
     summary = batch_summary(rows, scores)
+    summary["phase"] = args.phase
+    summary["stages"] = stages
+    summary["planned_against"] = "measured_esdf" if use_map else "ground_truth_boxes"
     summary_path = args.output / "phase0_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 

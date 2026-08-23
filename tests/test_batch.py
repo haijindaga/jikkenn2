@@ -182,3 +182,62 @@ def test_summary_success_rate_counts_only_measured_trials():
 def test_summary_is_json_serialisable():
     rows = [{"trial": "arr_001", "outcome": "passed"}]
     json.dumps(batch.batch_summary(rows, [_score(True)]))
+
+
+def test_phase_zero_skips_the_map_stage():
+    assert "map" not in batch.phase_stages(0)
+    assert batch.phase_stages(0) == ("capture", "plan", "execute", "score")
+
+
+def test_phase_one_builds_a_map_before_planning():
+    stages = batch.phase_stages(1)
+    assert stages.index("map") < stages.index("plan")
+    assert stages.index("capture") < stages.index("map")
+
+
+def test_an_unknown_phase_is_refused():
+    with pytest.raises(ValueError, match="unknown phase"):
+        batch.phase_stages(7)
+
+
+def test_the_map_stage_runs_in_the_curobo_environment(interpreters, tmp_path):
+    command = batch.stage_command(
+        "map",
+        repo_root=tmp_path,
+        interpreters=interpreters,
+        arrangement=tmp_path / "arr_001.json",
+        trial=tmp_path / "out" / "arr_001",
+        scene=tmp_path / "scene.usd",
+    )
+    assert command[0] == str(interpreters.curobo)
+    assert command[1].endswith("build_map.py")
+
+
+def test_the_planner_is_pointed_at_the_map_only_in_phase_one(interpreters, tmp_path):
+    trial = tmp_path / "out" / "arr_001"
+    without = batch.stage_command(
+        "plan",
+        repo_root=tmp_path,
+        interpreters=interpreters,
+        arrangement=tmp_path / "arr_001.json",
+        trial=trial,
+        scene=tmp_path / "scene.usd",
+        use_map=False,
+    )
+    with_map = batch.stage_command(
+        "plan",
+        repo_root=tmp_path,
+        interpreters=interpreters,
+        arrangement=tmp_path / "arr_001.json",
+        trial=trial,
+        scene=tmp_path / "scene.usd",
+        use_map=True,
+    )
+    assert "--map" not in without
+    assert "--map" in with_map
+    assert with_map[with_map.index("--map") + 1] == str(trial / "map")
+
+
+def test_a_failed_map_abandons_that_trial():
+    assert batch.classify_stage_result("map", 2) == ("error", False)
+    assert batch.classify_stage_result("map", 0) == ("ok", True)
