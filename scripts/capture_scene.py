@@ -299,6 +299,13 @@ def main() -> int:
             "robot_state_is_finite": bool(np.all(np.isfinite(joint_positions))),
             "objects_stayed_where_they_were_placed": settle["status"] == "success",
             "robot_held_its_home_configuration": bool(home_error_rad <= 0.05),
+            "captured_resolution_matches_the_spec": bool(
+                depth_m.shape == (height, width) and rgb.shape[:2] == (height, width)
+            ),
+            "intrinsics_principal_point_matches_the_image": bool(
+                abs(float(intrinsics[0, 2]) - width / 2.0) <= 1.0
+                and abs(float(intrinsics[1, 2]) - height / 2.0) <= 1.0
+            ),
         }
         report = {
             "status": "success" if all(checks.values()) else "failed_checks",
@@ -308,7 +315,20 @@ def main() -> int:
                 "camera": "OpenCV optical, +x right, +y down, +z forward",
                 "world": "Isaac world; robot mount and tabletop at z=0",
             },
-            "camera": camera_settings,
+            "camera": {
+                **camera_settings,
+                "requested_resolution_px": [width, height],
+                "captured_depth_shape": list(depth_m.shape),
+                "captured_rgb_shape": list(rgb.shape),
+                "intrinsics_principal_point_px": [
+                    round(float(intrinsics[0, 2]), 3),
+                    round(float(intrinsics[1, 2]), 3),
+                ],
+                "intrinsics_focal_px": [
+                    round(float(intrinsics[0, 0]), 3),
+                    round(float(intrinsics[1, 1]), 3),
+                ],
+            },
             "geometry_check": geometry,
             "robot": {
                 "prim_path": ROBOT_PRIM_PATH,
