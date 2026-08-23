@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from jikkenn2.reachability import (  # noqa: E402
+    ORIENTATION_FAMILIES,
     candidate_hand_poses,
     classify_cells,
     default_grasp_height_m,
@@ -63,6 +64,15 @@ def parse_args() -> argparse.Namespace:
         "--overlay-only",
         action="store_true",
         help="Draw a map that was already computed; needs USD but not cuRobo",
+    )
+    parser.add_argument(
+        "--color-by",
+        choices=ORIENTATION_FAMILIES,
+        default="top_down",
+        help=(
+            "Which orientations the colour depends on. top_down answers 'can the "
+            "arm pick this up from above', which is what placement needs"
+        ),
     )
     return parser.parse_args()
 
@@ -257,6 +267,22 @@ def _draw_saved_map(args: argparse.Namespace) -> int:
             "'python scripts/reachability_map.py' before drawing"
         )
     labels = np.load(labels_path, allow_pickle=True)
+
+    # Recolouring is free: the IK results are on disk, so a different family
+    # never means recomputing 16800 solutions.
+    success_path = args.output / "ik_success.npy"
+    if args.color_by != report.get("colored_by") and success_path.is_file():
+        success = np.load(success_path)
+        labels = classify_cells(
+            success,
+            orientation_names=report["orientations"],
+            family=args.color_by,
+        )
+        report["colored_by"] = args.color_by
+        report["summary"] = summarize_labels(labels)
+        np.save(labels_path, np.asarray(labels, dtype=object), allow_pickle=True)
+        print(f"recoloured by {args.color_by}", flush=True)
+
     grid = tabletop_grid(
         scene,
         cell_size_m=report["grid"]["cell_size_m"],
@@ -312,7 +338,9 @@ def _run(args: argparse.Namespace) -> int:
     else:
         flat = poses.reshape(-1, 4, 4)
         solved = solve_ik_batch(flat, args, scene).reshape(cells, orientations)
-        labels = classify_cells(solved)
+        labels = classify_cells(
+            solved, orientation_names=orientation_names, family=args.color_by
+        )
         backend = "curobo_ik"
         success = solved
     elapsed_s = time.monotonic() - started
@@ -349,7 +377,20 @@ def _run(args: argparse.Namespace) -> int:
             "grasp_height_m": grasp_height,
         },
         "orientations": orientation_names,
+        "colored_by": args.color_by,
         "summary": summarize_labels(labels),
+        "summary_by_family": (
+            {
+                family: summarize_labels(
+                    classify_cells(
+                        success, orientation_names=orientation_names, family=family
+                    )
+                )
+                for family in ORIENTATION_FAMILIES
+            }
+            if success is not None
+            else None
+        ),
         "overlay": overlay,
         "elapsed_s": round(elapsed_s, 2),
         "note": (

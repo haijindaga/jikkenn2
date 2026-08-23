@@ -121,6 +121,51 @@ def test_classification_thresholds():
     assert list(labels) == ["free", "partial", "blocked"]
 
 
+def test_family_columns_split_top_down_from_side():
+    names = [name for name, _ in rc.grasp_orientations()]
+    top = rc.family_columns(names, "top_down")
+    side = rc.family_columns(names, "side")
+    assert len(top) == 4 and len(side) == 4
+    assert set(top).isdisjoint(side)
+    assert sorted([*top, *side]) == list(range(8))
+    assert list(rc.family_columns(names, "all")) == list(range(8))
+
+
+def test_unknown_family_is_rejected():
+    names = [name for name, _ in rc.grasp_orientations()]
+    with pytest.raises(ValueError, match="family must be one of"):
+        rc.family_columns(names, "diagonal")
+
+
+def test_top_down_family_ignores_the_side_columns():
+    """A cell where every top-down yaw solves is green even if no side does."""
+    names = [name for name, _ in rc.grasp_orientations()]
+    success = np.zeros((3, 8), dtype=bool)
+    top = rc.family_columns(names, "top_down")
+    side = rc.family_columns(names, "side")
+    success[0, top] = True                 # every top-down solves
+    success[1, top[0]] = True              # one top-down solves
+    success[2, side] = True                # only side approaches solve
+
+    labels = rc.classify_cells(success, orientation_names=names, family="top_down")
+    assert list(labels) == ["free", "partial", "blocked"]
+
+    # The same data is merely "partial" everywhere when all eight are mixed.
+    mixed = rc.classify_cells(success, orientation_names=names, family="all")
+    assert list(mixed) == ["partial", "partial", "partial"]
+
+
+def test_family_selection_needs_matching_names():
+    with pytest.raises(ValueError, match="orientation_names"):
+        rc.classify_cells(np.zeros((2, 8), dtype=bool), family="top_down")
+    with pytest.raises(ValueError, match="does not match"):
+        rc.classify_cells(
+            np.zeros((2, 8), dtype=bool),
+            orientation_names=["a", "b"],
+            family="top_down",
+        )
+
+
 def test_classification_rejects_the_wrong_shape():
     with pytest.raises(ValueError, match="cells, orientations"):
         rc.classify_cells(np.array([True, False]))

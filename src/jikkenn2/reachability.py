@@ -142,11 +142,48 @@ def candidate_hand_poses(
     return poses, [name for name, _ in named]
 
 
-def classify_cells(success: np.ndarray) -> np.ndarray:
-    """Turn per-orientation IK results into one label per cell."""
+#: Which orientations a colour is allowed to depend on.  ``top_down`` is the
+#: default because it answers the question a person actually has while placing
+#: an object: "if I put it here, can the arm pick it up?"  Mixing the side
+#: approaches in makes "all four top-down yaws work" and "one awkward side
+#: approach works" the same colour, which is useless for placement.
+ORIENTATION_FAMILIES = ("top_down", "side", "all")
+
+
+def family_columns(orientation_names: list[str], family: str) -> np.ndarray:
+    """Indices of the orientations belonging to ``family``."""
+    if family not in ORIENTATION_FAMILIES:
+        raise ValueError(f"family must be one of {ORIENTATION_FAMILIES}, got {family!r}")
+    if family == "all":
+        return np.arange(len(orientation_names))
+    columns = np.array(
+        [index for index, name in enumerate(orientation_names) if name.startswith(family)]
+    )
+    if columns.size == 0:
+        raise ValueError(f"no orientation belongs to family {family!r}")
+    return columns
+
+
+def classify_cells(
+    success: np.ndarray,
+    *,
+    orientation_names: list[str] | None = None,
+    family: str = "all",
+) -> np.ndarray:
+    """Turn per-orientation IK results into one label per cell.
+
+    ``free`` means every orientation in the family solved, ``partial`` means at
+    least one did, ``blocked`` means none did.
+    """
     solved = np.asarray(success, dtype=bool)
     if solved.ndim != 2:
         raise ValueError(f"success must be (cells, orientations), got {solved.shape}")
+    if family != "all":
+        if orientation_names is None:
+            raise ValueError("orientation_names is required to select a family")
+        if len(orientation_names) != solved.shape[1]:
+            raise ValueError("orientation_names does not match the success columns")
+        solved = solved[:, family_columns(orientation_names, family)]
     counts = solved.sum(axis=1)
     labels = np.full(counts.shape, "blocked", dtype=object)
     labels[counts > 0] = "partial"
