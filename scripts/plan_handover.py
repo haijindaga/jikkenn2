@@ -145,7 +145,12 @@ def build_planner(args, scene, boxes):
 
 
 def plan_segment(planner, device_cfg, current_state, pose_base, max_attempts):
-    """Plan one leg; returns (success, joint trajectory, diagnostics)."""
+    """Plan one leg.
+
+    Returns ``(success, trajectory, column_names, diagnostics)``.  The column
+    names come from the plan itself, because it can carry joints the planner
+    does not solve for.
+    """
     import torch
     from curobo._src.types.tool_pose import GoalToolPose
 
@@ -175,17 +180,19 @@ def plan_segment(planner, device_cfg, current_state, pose_base, max_attempts):
         "rotation_error_rad": _scalar(getattr(result, "rotation_error", None)),
     }
     if not success:
-        return False, None, diagnostics
+        return False, None, (), diagnostics
     trajectory = result.get_interpolated_plan()
     positions = trajectory.position
     if hasattr(positions, "detach"):
         positions = positions.detach().cpu().numpy()
-    positions = _as_horizon_by_dof(positions, len(planner.joint_names))
+    positions = _as_horizon_by_dof(positions)
+    names = trajectory_joint_names(trajectory, positions.shape[1], planner.joint_names)
     diagnostics["waypoints"] = int(positions.shape[0])
-    return True, positions, diagnostics
+    diagnostics["trajectory_joints"] = list(names)
+    return True, positions, names, diagnostics
 
 
-def _as_horizon_by_dof(positions, dof: int) -> np.ndarray:
+def _as_horizon_by_dof(positions, dof: int | None = None) -> np.ndarray:
     """Reduce a planned trajectory to ``(horizon, dof)``.
 
     cuRobo returns the plan with leading batch and seed axes, and how many of
@@ -199,11 +206,36 @@ def _as_horizon_by_dof(positions, dof: int) -> np.ndarray:
             f"planned trajectory has shape {np.asarray(positions).shape}, which does "
             "not reduce to (horizon, dof) by dropping singleton leading axes"
         )
-    if array.shape[1] != dof:
+    if dof is not None and array.shape[1] != dof:
         raise RuntimeError(
             f"planned trajectory has {array.shape[1]} joints, expected {dof}"
         )
     return array
+
+
+def trajectory_joint_names(trajectory, columns: int, planner_joint_names) -> tuple[str, ...]:
+    """Name the columns of a planned trajectory.
+
+    The plan can carry more joints than the planner solves for -- the Franka
+    plan includes the two finger joints while the planner moves seven -- so the
+    columns are identified by the trajectory's own names and never by position.
+    """
+    names = getattr(trajectory, "joint_names", None)
+    if names is not None:
+        named = tuple(str(name) for name in names)
+        if len(named) == columns:
+            return named
+        raise RuntimeError(
+            f"the plan reports {len(named)} joint names for {columns} columns: {named}"
+        )
+    planner_names = tuple(str(name) for name in planner_joint_names)
+    if columns == len(planner_names):
+        return planner_names
+    raise RuntimeError(
+        f"the plan has {columns} columns but carries no joint names, and the "
+        f"planner solves {len(planner_names)}: {planner_names}. Cannot tell which "
+        "column is which joint."
+    )
 
 
 def _scalar(value):
@@ -257,9 +289,10 @@ def main() -> int:
         segments = {}
         trajectories = {}
         reached = []
+        plan_joint_names: tuple[str, ...] = tuple(planner.joint_names)
         for name in SEGMENTS:
             pose_base = to_robot_base(waypoints[name], T_world_robot_base)
-            success, positions, diagnostics = plan_segment(
+            success, positions, column_names, diagnostics = plan_segment(
                 planner, device_cfg, current_state, pose_base, args.max_attempts
             )
             segments[name] = diagnostics
@@ -267,14 +300,20 @@ def main() -> int:
                 print(f"segment {name}: FAILED", flush=True)
                 break
             trajectories[name] = positions
+            plan_joint_names = column_names
             reached.append(name)
             print(
                 f"segment {name}: {diagnostics['waypoints']} waypoints "
                 f"in {diagnostics['wall_time_s']:.2f}s",
                 flush=True,
             )
+            # The plan can carry joints the planner does not solve, so the next
+            # start state is selected by name, never by column position.
+            final = select_named_joint_positions(
+                column_names, positions[-1], planner.joint_names
+            ).astype(np.float32)
             current_state = JointState.from_position(
-                torch.from_numpy(positions[-1]).to(device_cfg.device).unsqueeze(0),
+                torch.from_numpy(final).to(device_cfg.device).unsqueeze(0),
                 joint_names=list(planner.joint_names),
             )
 
@@ -301,7 +340,13 @@ def main() -> int:
             "first_segment_starts_at_the_capture": bool(
                 trajectories
                 and np.allclose(
-                    trajectories[SEGMENTS[0]][0], start_positions, atol=2e-3
+                    select_named_joint_positions(
+                        plan_joint_names,
+                        trajectories[SEGMENTS[0]][0],
+                        planner.joint_names,
+                    ),
+                    start_positions,
+                    atol=2e-3,
                 )
             ),
         }
@@ -343,7 +388,10 @@ def main() -> int:
                     for name, positions in trajectories.items()
                 }
             },
-            "joint_names": list(planner.joint_names),
+            "joint_names": {
+                "planner_solves": list(planner.joint_names),
+                "trajectory_columns": list(plan_joint_names),
+            },
             "automatic_checks": checks,
             "safety": {
                 "trajectory_executed": False,
