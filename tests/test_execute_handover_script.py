@@ -65,3 +65,61 @@ def test_arm_columns_are_matched_by_name_not_position():
 def test_closed_command_is_fully_closed():
     assert ex.CLOSED_M == pytest.approx(0.0)
     assert ex.OPEN_M == pytest.approx(0.04)
+
+
+class FakeRecorderArticulation:
+    dof_names = ["panda_joint1", "panda_finger_joint1", "panda_finger_joint2"]
+
+    def __init__(self, width):
+        self.width = width
+
+    def get_joint_positions(self):
+        return np.array([0.0, self.width / 2.0, self.width / 2.0])
+
+
+def make_recorder(trace):
+    """Build a Recorder without a stage, then feed it a synthetic trace."""
+    recorder = ex.Recorder.__new__(ex.Recorder)
+    recorder.trace_step = [index for index, _ in enumerate(trace, start=1)]
+    recorder.trace_leg = [leg for leg, _, _ in trace]
+    recorder.trace_width = [width for _, width, _ in trace]
+    recorder.trace_tool = [[0.45, 0.15, height] for _, _, height in trace]
+    return recorder
+
+
+def test_a_held_tool_reports_no_lost_grip():
+    trace = (
+        [("grasp", 0.045, 0.022)] * 5
+        + [("lift", 0.044, 0.10)] * 5
+        + [("handover", 0.044, 0.35)] * 5
+    )
+    summary = make_recorder(trace).trace_summary(table_top_z=0.0)
+    assert summary["grip_lost_at"] is None
+    assert summary["tool_left_the_table"] is True
+    assert summary["tool_height_gain_m"] == pytest.approx(0.328, abs=1e-3)
+    assert summary["minimum_width_while_carrying_m"] == pytest.approx(0.044)
+
+
+def test_a_dropped_tool_names_the_step_and_the_leg():
+    trace = (
+        [("grasp", 0.045, 0.022)] * 3
+        + [("lift", 0.045, 0.022)] * 2
+        + [("lift", 0.0, 0.022)] * 3
+        + [("handover", 0.0, 0.022)] * 2
+    )
+    summary = make_recorder(trace).trace_summary(table_top_z=0.0)
+    assert summary["grip_lost_at"]["leg"] == "lift"
+    assert summary["grip_lost_at"]["step"] == 6
+    assert summary["tool_left_the_table"] is False
+    assert summary["tool_height_gain_m"] == pytest.approx(0.0)
+
+
+def test_closing_during_the_grasp_leg_is_not_a_lost_grip():
+    """The gripper is legitimately closing while the grasp leg runs."""
+    trace = [("grasp", 0.0, 0.022)] * 5 + [("lift", 0.045, 0.10)] * 5
+    summary = make_recorder(trace).trace_summary(table_top_z=0.0)
+    assert summary["grip_lost_at"] is None
+
+
+def test_an_empty_trace_is_reported_rather_than_crashing():
+    assert make_recorder([]).trace_summary(table_top_z=0.0) == {"samples": 0}

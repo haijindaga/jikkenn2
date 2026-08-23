@@ -108,6 +108,12 @@ class Recorder:
         ]
         self.samples: list[dict] = []
         self.max_tracking_error_rad = 0.0
+        # Per-step trace: leg boundaries alone cannot say *when* a grasp was
+        # lost, only that it was gone by the next boundary.
+        self.trace_step: list[int] = []
+        self.trace_leg: list[str] = []
+        self.trace_width: list[float] = []
+        self.trace_tool: list[list[float]] = []
 
     def pose(self, prim_path: str) -> dict:
         from jikkenn2.arrangement import read_pose
@@ -116,6 +122,45 @@ class Recorder:
 
     def obstacle_poses(self) -> dict[str, dict]:
         return {path: self.pose(path) for path in self.obstacle_paths}
+
+    def trace(self, step: int, leg: str, articulation) -> None:
+        actual = np.asarray(articulation.get_joint_positions(), dtype=np.float64)
+        pose = self.pose(self.tool_prim_path)
+        self.trace_step.append(int(step))
+        self.trace_leg.append(leg)
+        self.trace_width.append(gripper_width_m(articulation.dof_names, actual))
+        self.trace_tool.append([float(v) for v in pose["position_m"]])
+
+    def trace_summary(self, table_top_z: float, closed_threshold: float = 0.005) -> dict:
+        """Say when the grip was lost, if it was."""
+        if not self.trace_step:
+            return {"samples": 0}
+        width = np.asarray(self.trace_width)
+        tool = np.asarray(self.trace_tool)
+        legs = np.asarray(self.trace_leg)
+        after_grasp = np.flatnonzero(np.isin(legs, ("lift", "handover")))
+        lost_at = None
+        if after_grasp.size:
+            empty = after_grasp[width[after_grasp] < closed_threshold]
+            if empty.size:
+                lost_at = {
+                    "step": int(self.trace_step[int(empty[0])]),
+                    "leg": str(legs[int(empty[0])]),
+                    "tool_height_m": round(float(tool[int(empty[0]), 2]), 5),
+                }
+        return {
+            "samples": len(self.trace_step),
+            "max_tool_height_m": round(float(tool[:, 2].max()), 5),
+            "tool_height_gain_m": round(float(tool[:, 2].max() - tool[0, 2]), 5),
+            "tool_travel_m": round(
+                float(np.linalg.norm(tool[-1, :2] - tool[0, :2])), 5
+            ),
+            "tool_left_the_table": bool(tool[:, 2].max() > table_top_z + 0.05),
+            "minimum_width_while_carrying_m": (
+                round(float(width[after_grasp].min()), 5) if after_grasp.size else None
+            ),
+            "grip_lost_at": lost_at,
+        }
 
     def sample(self, label: str, articulation, commanded) -> dict:
         actual = np.asarray(articulation.get_joint_positions(), dtype=np.float64)
@@ -203,12 +248,14 @@ def main() -> int:
 
         saved_frames = 0
         step_index = 0
+        current_leg = "start"
 
         def advance(target, render: bool) -> None:
             nonlocal step_index, saved_frames
             command(target)
             world.step(render=render)
             step_index += 1
+            recorder.trace(step_index, current_leg, panda)
             if camera is not None and step_index % args.record_every == 0:
                 frame = camera.get_current_frame()
                 rgba = frame.get("rgba")
@@ -221,6 +268,7 @@ def main() -> int:
 
         target = home.copy()
         for leg in plan["segments"]:
+            current_leg = leg
             trajectory = plan["trajectories"][leg]
             finger = OPEN_M if LEG_GRIPPER_OPEN[leg] else CLOSED_M
             for row in trajectory:
@@ -238,6 +286,7 @@ def main() -> int:
             print(f"leg {leg}: {trajectory.shape[0]} waypoints replayed", flush=True)
 
             if leg == "grasp":
+                current_leg = "close"
                 target = merge_named_joint_positions(
                     isaac_names, target, {name: CLOSED_M for name in FINGER_JOINTS}
                 )
@@ -250,6 +299,7 @@ def main() -> int:
                     flush=True,
                 )
 
+        current_leg = "hold"
         for _ in range(args.hold_steps):
             advance(target, render=args.gui or camera is not None)
         final = recorder.sample("after_hold", panda, target)
@@ -282,6 +332,7 @@ def main() -> int:
             "legs_replayed": list(plan["segments"]),
             "samples": recorder.samples,
             "obstacle_motion": obstacle_motion,
+            "carry": recorder.trace_summary(scene.table_top_z_m),
             "final_tool": final["tool"],
             "final_handover_orientation": gt.handover_orientation(tool_pose, scene),
             "frames_saved": saved_frames,
@@ -294,7 +345,17 @@ def main() -> int:
                 "judgement": "none; score_trial.py applies the criteria",
             },
         }
+        np.save(output / "trace_gripper_width_m.npy", np.asarray(recorder.trace_width))
+        np.save(output / "trace_tool_position_m.npy", np.asarray(recorder.trace_tool))
         report_path.write_text(json.dumps(log, indent=2) + "\n", encoding="utf-8")
+        carry = log["carry"]
+        print(
+            f"tool lifted {carry['tool_height_gain_m']:.4f} m, "
+            f"travelled {carry['tool_travel_m']:.4f} m",
+            flush=True,
+        )
+        if carry.get("grip_lost_at"):
+            print(f"GRIP LOST at {carry['grip_lost_at']}", flush=True)
         print(f"final gripper width: {final['gripper_width_m']:.4f} m", flush=True)
         print(
             "final handover angles: safe "

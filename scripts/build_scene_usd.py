@@ -43,6 +43,17 @@ FRANKA_CANDIDATE_PATHS = (
 ROBOT_SEARCH_ROOT = "/Isaac/Robots"
 ROBOT_SEARCH_DEPTH = 3
 
+# Friction. The gripped tool needs enough to be held by finger pressure alone;
+# the table and obstacles use ordinary values so nothing slides on its own.
+GRIP_STATIC_FRICTION = 1.2
+GRIP_DYNAMIC_FRICTION = 1.0
+SURFACE_STATIC_FRICTION = 0.6
+SURFACE_DYNAMIC_FRICTION = 0.5
+
+# A 200 mm proxy tool. Light enough that a position-controlled gripper holds it
+# without needing force control, heavy enough to fall and settle realistically.
+TOOL_MASS_KG = 0.25
+
 # Obstacle geometry lives in scene_spec, which owns every metric value.
 OBSTACLE_LAYOUT = DEFAULT_SCENE.obstacles
 
@@ -110,7 +121,37 @@ def _place_referenced_prim(pxr, prim, translation) -> None:
     xform.AddTranslateOp().Set(Gf.Vec3d(*(float(v) for v in translation)))
 
 
-def _add_box(pxr, stage, path, *, size_m, translation, color, collision=True):
+def _define_physics_material(pxr, stage, path, *, static, dynamic, restitution):
+    """A named friction/restitution material, bound for the physics purpose.
+
+    Left unspecified, PhysX uses its own defaults, and a gripped object slides
+    out of the fingers. Friction is a property of the scene, so it is stated
+    here rather than discovered as a mystery during execution.
+    """
+    from pxr import UsdPhysics, UsdShade
+
+    material = UsdShade.Material.Define(stage, path)
+    physics = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    physics.CreateStaticFrictionAttr(float(static))
+    physics.CreateDynamicFrictionAttr(float(dynamic))
+    physics.CreateRestitutionAttr(float(restitution))
+    return material
+
+
+def _bind_physics_material(pxr, prim, material) -> None:
+    from pxr import UsdShade
+
+    binding = UsdShade.MaterialBindingAPI.Apply(prim)
+    binding.Bind(
+        material,
+        bindingStrength=UsdShade.Tokens.weakerThanDescendants,
+        materialPurpose="physics",
+    )
+
+
+def _add_box(
+    pxr, stage, path, *, size_m, translation, color, collision=True, physics_material=None
+):
     """Add a unit cube scaled to ``size_m``; returns the prim."""
     from pxr import Gf, UsdGeom, UsdPhysics, Vt
 
@@ -123,6 +164,8 @@ def _add_box(pxr, stage, path, *, size_m, translation, color, collision=True):
     _set_transform(pxr, cube.GetPrim(), translation, scale=size_m)
     if collision:
         UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        if physics_material is not None:
+            _bind_physics_material(pxr, cube.GetPrim(), physics_material)
     return cube.GetPrim()
 
 
@@ -164,6 +207,25 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
     dome = stage.DefinePrim("/World/Lights/Dome", "DomeLight")
     dome.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(1200.0)
 
+    # --- physics materials -----------------------------------------------
+    UsdGeom.Xform.Define(stage, "/World/PhysicsMaterials")
+    grip_material = _define_physics_material(
+        pxr,
+        stage,
+        "/World/PhysicsMaterials/grip",
+        static=GRIP_STATIC_FRICTION,
+        dynamic=GRIP_DYNAMIC_FRICTION,
+        restitution=0.0,
+    )
+    surface_material = _define_physics_material(
+        pxr,
+        stage,
+        "/World/PhysicsMaterials/surface",
+        static=SURFACE_STATIC_FRICTION,
+        dynamic=SURFACE_DYNAMIC_FRICTION,
+        restitution=0.0,
+    )
+
     # --- table (static) ------------------------------------------------
     _add_box(
         pxr,
@@ -172,6 +234,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
         size_m=scene.table_size_m,
         translation=scene.table_center_m,
         color=(0.45, 0.32, 0.20),
+        physics_material=surface_material,
     )
 
     # --- proxy tool: one rigid body, two labelled boxes -----------------
@@ -183,7 +246,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
         scene.table_top_z_m + 0.5 * tallest,
     )
     _set_transform(pxr, tool_root.GetPrim(), tool_origin)
-    _make_rigid_body(pxr, tool_root.GetPrim(), mass_kg=0.5)
+    _make_rigid_body(pxr, tool_root.GetPrim(), mass_kg=TOOL_MASS_KG)
     part_colors = {
         scene.danger_part_name: (0.85, 0.20, 0.15),
         scene.safe_part_name: (0.20, 0.55, 0.85),
@@ -196,6 +259,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
             size_m=part.size_m,
             translation=part.center_m,
             color=part_colors.get(part.name, (0.6, 0.6, 0.6)),
+            physics_material=grip_material,
         )
 
     # --- movable obstacles ---------------------------------------------
@@ -208,6 +272,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
             size_m=obstacle.size_m,
             translation=obstacle.initial_position_m,
             color=obstacle.color,
+            physics_material=surface_material,
         )
         _make_rigid_body(pxr, prim, mass_kg=0.3)
 
@@ -255,6 +320,11 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
     stage.GetRootLayer().Save()
     return {
         "output": str(output),
+        "physics": {
+            "tool_mass_kg": TOOL_MASS_KG,
+            "grip_friction": [GRIP_STATIC_FRICTION, GRIP_DYNAMIC_FRICTION],
+            "surface_friction": [SURFACE_STATIC_FRICTION, SURFACE_DYNAMIC_FRICTION],
+        },
         "franka_reference": franka_url,
         "robot_referenced": robot_referenced,
         "tool_origin_m": [round(float(v), 4) for v in tool_origin],
