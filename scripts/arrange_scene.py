@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene", type=Path, default=REPO_ROOT / "assets" / "scene.usd")
     parser.add_argument("--output", type=Path, default=REPO_ROOT / "arrangements")
     parser.add_argument(
+        "--overlay",
+        type=Path,
+        help="Reachability overlay USD to lay over the table while placing",
+    )
+    parser.add_argument(
         "--headless",
         action="store_true",
         help="Snapshot the stage as-is and exit; no GUI, no interaction",
@@ -108,6 +113,21 @@ def main() -> int:
         stage = context.get_stage()
         if stage is None:
             raise RuntimeError(f"Isaac could not open {stage_path}")
+
+        # Layered in memory only: the overlay is a placement aid and must never
+        # become part of the saved stage.
+        if args.overlay is not None:
+            overlay_path = args.overlay.resolve()
+            if not overlay_path.is_file():
+                raise FileNotFoundError(
+                    f"{overlay_path} does not exist; run scripts/reachability_map.py first"
+                )
+            prim = stage.DefinePrim("/World/ReachabilityOverlay", "Xform")
+            prim.GetReferences().AddReference(str(overlay_path))
+            for _ in range(30):
+                simulation_app.update()
+            print(f"overlay: {overlay_path}", flush=True)
+            print("  green = every approach solves, yellow = some, red = none", flush=True)
 
         if args.headless:
             arrangement = _snapshot(stage, scene, str(stage_path))
