@@ -57,6 +57,23 @@ class SceneSpec:
     # image contributes nothing to the depth and therefore needs no masking.
     robot_body_height_m: float = 1.00
 
+    # The Franka "ready" configuration, in radians and metres.  Stated here
+    # rather than inherited from the referenced USD: whatever joint targets the
+    # asset happens to carry would otherwise become the planner's start state,
+    # and it would change silently if the asset were updated.  Elbow up, hand
+    # roughly 0.3 m in front of the base and 0.5 m above the tabletop.
+    robot_home_joint_positions: tuple[tuple[str, float], ...] = (
+        ("panda_joint1", 0.0),
+        ("panda_joint2", -0.785398),
+        ("panda_joint3", 0.0),
+        ("panda_joint4", -2.356194),
+        ("panda_joint5", 0.0),
+        ("panda_joint6", 1.570796),
+        ("panda_joint7", 0.785398),
+        ("panda_finger_joint1", 0.04),
+        ("panda_finger_joint2", 0.04),
+    )
+
     # --- room and table --------------------------------------------------
     ground_z_m: float = -1.05
     table_center_m: tuple[float, float, float] = (0.55, 0.0, -0.025)
@@ -126,6 +143,19 @@ class SceneSpec:
         point = np.asarray(point_m, dtype=np.float64)
         (min_x, min_y), (max_x, max_y) = self.table_min_xy_m, self.table_max_xy_m
         return bool(min_x <= point[0] <= max_x and min_y <= point[1] <= max_y)
+
+    def home_positions_for(self, joint_names) -> np.ndarray:
+        """Home positions in an articulation's own joint order.
+
+        Selection is by name, because the articulation's DOF order is decided
+        by the asset and must never be assumed.
+        """
+        home = dict(self.robot_home_joint_positions)
+        requested = [str(name) for name in joint_names]
+        missing = [name for name in requested if name not in home]
+        if missing:
+            raise KeyError(f"no home position defined for: {missing}")
+        return np.array([home[name] for name in requested], dtype=np.float64)
 
     def part(self, name: str) -> ToolPart:
         for candidate in self.tool_parts:

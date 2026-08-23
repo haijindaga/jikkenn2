@@ -148,3 +148,34 @@ def test_degenerate_camera_is_rejected():
     broken = SceneSpec(camera_position_m=(0.5, 0.0, 1.6), camera_target_m=(0.5, 0.0, 0.0))
     with pytest.raises(ValueError):
         broken.camera_axes()
+
+
+def test_home_configuration_is_returned_in_the_requested_order():
+    forward = DEFAULT_SCENE.home_positions_for(
+        ["panda_joint1", "panda_joint2", "panda_finger_joint1"]
+    )
+    assert forward == pytest.approx([0.0, -0.785398, 0.04])
+    reversed_order = DEFAULT_SCENE.home_positions_for(
+        ["panda_finger_joint1", "panda_joint2", "panda_joint1"]
+    )
+    assert reversed_order == pytest.approx([0.04, -0.785398, 0.0])
+
+
+def test_home_configuration_covers_every_franka_joint():
+    names = [name for name, _ in DEFAULT_SCENE.robot_home_joint_positions]
+    assert [name for name in names if name.startswith("panda_joint")] == [
+        f"panda_joint{index}" for index in range(1, 8)
+    ]
+    assert sum(name.startswith("panda_finger") for name in names) == 2
+
+
+def test_home_configuration_rejects_an_unknown_joint():
+    with pytest.raises(KeyError, match="panda_joint9"):
+        DEFAULT_SCENE.home_positions_for(["panda_joint9"])
+
+
+def test_home_fingers_are_open():
+    home = dict(DEFAULT_SCENE.robot_home_joint_positions)
+    # The Panda gripper opens to 0.04 m per finger, 0.08 m total.
+    assert home["panda_finger_joint1"] == pytest.approx(0.04)
+    assert home["panda_finger_joint2"] == pytest.approx(0.04)

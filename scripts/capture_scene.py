@@ -72,6 +72,34 @@ def make_articulation(prim_path: str, name: str):
     )
 
 
+def set_home_configuration(articulation, home) -> str:
+    """Put the arm at the home pose *and* make the drives hold it there.
+
+    Setting positions alone is not enough: the position controller keeps
+    pulling toward its own targets, so the targets have to move too.
+    """
+    import numpy as np
+
+    positions = np.asarray(home, dtype=np.float32)
+    used = []
+    if hasattr(articulation, "set_joints_default_state"):
+        articulation.set_joints_default_state(positions=positions)
+        used.append("set_joints_default_state")
+    articulation.set_joint_positions(positions)
+    used.append("set_joint_positions")
+    for setter in ("set_joint_position_targets", "set_joint_positions_target"):
+        if hasattr(articulation, setter):
+            getattr(articulation, setter)(positions)
+            used.append(setter)
+            break
+    if len(used) < 2:
+        raise RuntimeError(
+            "could not pin the home configuration: this articulation exposes "
+            f"only {used}. Check the Isaac Sim API for setting drive targets."
+        )
+    return "+".join(used)
+
+
 def configure_camera(camera, scene, resolution):
     """Point the camera and give it the metric depth channel."""
     from jikkenn2.geometry import look_at_quaternion_world
@@ -198,6 +226,14 @@ def main() -> int:
         world.scene.add(panda)
         world.reset()
 
+        # Pin the start configuration.  Without this the arm drifts toward
+        # whatever joint targets the referenced asset carries, which would then
+        # become the planner's start state and could sweep the tool off the
+        # table on the way.
+        home = scene.home_positions_for(panda.dof_names)
+        home_method = set_home_configuration(panda, home)
+        world.reset()
+
         # Settle: a hand-placed object is never exactly resting on the table.
         for _ in range(args.settle_steps):
             world.step(render=False)
@@ -225,6 +261,7 @@ def main() -> int:
         T_world_robot_base = matrix_from_pose(base_position, base_orientation)
         joint_names = tuple(str(name) for name in panda.dof_names)
         joint_positions = np.asarray(panda.get_joint_positions(), dtype=np.float64)
+        home_error_rad = float(np.max(np.abs(joint_positions - home)))
 
         tool = next(
             entry for entry in settled["objects"] if entry["prim_path"] == TOOL_PRIM_PATH
@@ -261,6 +298,7 @@ def main() -> int:
             },
             "robot_state_is_finite": bool(np.all(np.isfinite(joint_positions))),
             "objects_stayed_where_they_were_placed": settle["status"] == "success",
+            "robot_held_its_home_configuration": bool(home_error_rad <= 0.05),
         }
         report = {
             "status": "success" if all(checks.values()) else "failed_checks",
@@ -276,6 +314,9 @@ def main() -> int:
                 "prim_path": ROBOT_PRIM_PATH,
                 "joint_names": list(joint_names),
                 "joint_count": len(joint_names),
+                "home_joint_positions": [round(float(v), 6) for v in home],
+                "home_applied_with": home_method,
+                "max_deviation_from_home_rad": round(home_error_rad, 5),
             },
             "ground_truth": {
                 "usage": "evaluation and Phase 0 stand-in for perception only",
