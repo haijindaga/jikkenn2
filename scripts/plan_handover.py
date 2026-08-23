@@ -180,11 +180,30 @@ def plan_segment(planner, device_cfg, current_state, pose_base, max_attempts):
     positions = trajectory.position
     if hasattr(positions, "detach"):
         positions = positions.detach().cpu().numpy()
-    positions = np.asarray(positions, dtype=np.float32)
-    if positions.ndim == 3 and positions.shape[0] == 1:
-        positions = positions[0]
+    positions = _as_horizon_by_dof(positions, len(planner.joint_names))
     diagnostics["waypoints"] = int(positions.shape[0])
     return True, positions, diagnostics
+
+
+def _as_horizon_by_dof(positions, dof: int) -> np.ndarray:
+    """Reduce a planned trajectory to ``(horizon, dof)``.
+
+    cuRobo returns the plan with leading batch and seed axes, and how many of
+    them there are has varied; peel singleton axes rather than assuming a rank.
+    """
+    array = np.asarray(positions, dtype=np.float32)
+    while array.ndim > 2 and array.shape[0] == 1:
+        array = array[0]
+    if array.ndim != 2:
+        raise RuntimeError(
+            f"planned trajectory has shape {np.asarray(positions).shape}, which does "
+            "not reduce to (horizon, dof) by dropping singleton leading axes"
+        )
+    if array.shape[1] != dof:
+        raise RuntimeError(
+            f"planned trajectory has {array.shape[1]} joints, expected {dof}"
+        )
+    return array
 
 
 def _scalar(value):
