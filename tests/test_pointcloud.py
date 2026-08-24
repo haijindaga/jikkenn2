@@ -72,3 +72,36 @@ def test_subsample_is_deterministic():
 def test_subsample_needs_a_positive_limit():
     with pytest.raises(ValueError, match="positive"):
         pointcloud.subsample(np.zeros((5, 3)), 0)
+
+
+def test_a_gripper_marker_spans_the_approach_and_the_jaw():
+    pose = np.eye(4)
+    pose[:3, :3] = np.array([[1.0, 0, 0], [0, -1.0, 0], [0, 0, -1.0]])
+    pose[:3, 3] = [0.5, 0.1, 0.3]
+    points = pointcloud.gripper_marker_points(
+        pose, fingertip_depth_m=0.1034, half_width_m=0.04, samples=16
+    )
+    assert points.shape == (32, 3)
+    # The shaft runs from the wrist down to the fingertip.
+    assert points[0] == pytest.approx([0.5, 0.1, 0.3])
+    assert points[15] == pytest.approx([0.5, 0.1, 0.3 - 0.1034], abs=1e-6)
+    # The jaw crosses the fingertip along the closing axis.
+    assert points[16] == pytest.approx([0.5, 0.1 + 0.04, 0.3 - 0.1034], abs=1e-6)
+    assert points[31] == pytest.approx([0.5, 0.1 - 0.04, 0.3 - 0.1034], abs=1e-6)
+
+
+def test_markers_stack_for_many_grasps():
+    pose = np.eye(4)
+    points = pointcloud.gripper_markers(
+        np.stack([pose, pose, pose]), fingertip_depth_m=0.1, samples=8
+    )
+    assert points.shape == (48, 3)
+
+
+def test_no_grasps_gives_an_empty_marker_cloud():
+    assert pointcloud.gripper_markers(np.zeros((0, 4, 4)), fingertip_depth_m=0.1).shape == (0, 3)
+
+
+def test_a_badly_shaped_pose_is_refused():
+    with pytest.raises(ValueError, match="4x4"):
+        pointcloud.gripper_marker_points(np.eye(3), fingertip_depth_m=0.1)

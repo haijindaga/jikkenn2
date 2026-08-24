@@ -54,3 +54,40 @@ def subsample(points: np.ndarray, limit: int, *, seed: int = 0) -> np.ndarray:
         return points
     picks = np.random.default_rng(seed).permutation(len(points))[:limit]
     return points[np.sort(picks)]
+
+
+def gripper_marker_points(
+    hand_pose,
+    *,
+    fingertip_depth_m: float,
+    half_width_m: float = 0.04,
+    samples: int = 16,
+) -> np.ndarray:
+    """A small T of points showing one grasp: approach line and finger line.
+
+    Drawn rather than described, because "the approach is wrong" is a sentence
+    nobody can check and a shape anybody can.
+    """
+    pose = np.asarray(hand_pose, dtype=np.float64)
+    if pose.shape != (4, 4):
+        raise ValueError(f"hand_pose must be 4x4, got {pose.shape}")
+    if samples < 2:
+        raise ValueError("samples must be at least 2")
+    wrist = pose[:3, 3]
+    approach = pose[:3, 2]
+    closing = pose[:3, 1]
+    fingertip = wrist + approach * float(fingertip_depth_m)
+
+    along = np.linspace(0.0, float(fingertip_depth_m), samples)
+    shaft = wrist + approach * along[:, None]
+    across = np.linspace(-half_width_m, half_width_m, samples)
+    jaw = fingertip + closing * across[:, None]
+    return np.vstack([shaft, jaw]).astype(np.float32)
+
+
+def gripper_markers(hand_poses, **kwargs) -> np.ndarray:
+    """Marker points for many grasps, stacked."""
+    poses = np.asarray(hand_poses, dtype=np.float64)
+    if len(poses) == 0:
+        return np.empty((0, 3), dtype=np.float32)
+    return np.vstack([gripper_marker_points(pose, **kwargs) for pose in poses])
