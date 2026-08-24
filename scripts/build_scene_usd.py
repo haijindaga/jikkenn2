@@ -181,6 +181,41 @@ def _make_rigid_body(pxr, prim, *, mass_kg: float, center_of_mass_m=None) -> Non
         )
 
 
+def override_finger_force(pxr, stage, root: str, max_force_n: float) -> dict:
+    """Raise the gripper's force limit on top of the referenced asset.
+
+    The Isaac Franka ships its finger drives at 7.2 N, about a tenth of the
+    hand's published grasping force. Authoring the real figure over the
+    reference is a fidelity correction; the previous value is recorded so the
+    change is visible rather than assumed.
+    """
+    from pxr import Usd, UsdPhysics
+
+    prim_root = stage.GetPrimAtPath(root)
+    if not prim_root.IsValid():
+        raise RuntimeError(f"{root} is not in the stage; cannot set the finger force")
+    overridden = {}
+    for prim in Usd.PrimRange(prim_root):
+        if "finger" not in prim.GetName().lower():
+            continue
+        for instance in ("linear", "angular"):
+            drive = UsdPhysics.DriveAPI.Get(prim, instance)
+            if not drive:
+                continue
+            attribute = drive.GetMaxForceAttr()
+            previous = attribute.Get() if attribute else None
+            drive.CreateMaxForceAttr(float(max_force_n))
+            overridden[f"{prim.GetPath().pathString}:{instance}"] = {
+                "asset_value_n": None if previous is None else round(float(previous), 3),
+                "set_to_n": float(max_force_n),
+            }
+    if not overridden:
+        raise RuntimeError(
+            f"no finger drive found under {root}; the gripper force was not set"
+        )
+    return overridden
+
+
 def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) -> dict:
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
@@ -320,10 +355,14 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
 
     # --- robot -----------------------------------------------------------
     robot_referenced = False
+    finger_force = None
     if franka_url is not None:
         robot = UsdGeom.Xform.Define(stage, "/World/Panda")
         robot.GetPrim().GetReferences().AddReference(franka_url)
         _place_referenced_prim(pxr, robot.GetPrim(), scene.robot_base_position_m)
+        finger_force = override_finger_force(
+            pxr, stage, "/World/Panda", scene.gripper_max_force_n
+        )
         robot_referenced = True
 
     stage.GetRootLayer().Save()
@@ -339,6 +378,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
         },
         "franka_reference": franka_url,
         "robot_referenced": robot_referenced,
+        "finger_force_override": finger_force,
         "tool_origin_m": [round(float(v), 4) for v in tool_origin],
         "obstacle_count": len(OBSTACLE_LAYOUT),
     }

@@ -102,6 +102,14 @@ class SceneSpec:
     #: apart.  Euclidean distance in unit RGB.
     minimum_color_separation: float = 0.35
 
+    #: Force each finger drive may apply, in newtons.  The Franka Hand's
+    #: published continuous grasping force is about 70 N; the Isaac asset ships
+    #: its finger drives at 7.2 N, a tenth of that.  Stating the real figure
+    #: here is a fidelity correction, not a tuning knob -- and because it
+    #: changes the physics every phase runs under, all phases must be re-run
+    #: together whenever it moves.
+    gripper_max_force_n: float = 70.0
+
     # --- camera (opposite side from the human) ---------------------------
     camera_position_m: tuple[float, float, float] = (0.50, 1.30, 1.60)
     camera_target_m: tuple[float, float, float] = (0.50, 0.00, 0.05)
