@@ -237,7 +237,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
         "/World/Table",
         size_m=scene.table_size_m,
         translation=scene.table_center_m,
-        color=(0.45, 0.32, 0.20),
+        color=scene.table_color,
         physics_material=surface_material,
     )
 
@@ -260,10 +260,6 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
         mass_kg=TOOL_MASS_KG,
         center_of_mass_m=scene.part(scene.grasp_part_name).center_m,
     )
-    part_colors = {
-        scene.danger_part_name: (0.85, 0.20, 0.15),
-        scene.safe_part_name: (0.20, 0.55, 0.85),
-    }
     for part in scene.tool_parts:
         _add_box(
             pxr,
@@ -271,7 +267,7 @@ def author_stage(pxr, scene: SceneSpec, output: Path, franka_url: str | None) ->
             f"/World/Tools/proxy_tool/{part.name}",
             size_m=part.size_m,
             translation=part.center_m,
-            color=part_colors.get(part.name, (0.6, 0.6, 0.6)),
+            color=part.color,
             physics_material=grip_material,
         )
 

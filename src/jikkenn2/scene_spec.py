@@ -37,6 +37,10 @@ class ToolPart:
     size_m: tuple[float, float, float]
     center_m: tuple[float, float, float]
     axis_local: tuple[float, float, float]
+    #: Appearance is not decoration here: Phase 2 finds the tool with a text
+    #: prompt, so a part's colour is what the prompt refers to.
+    color: tuple[float, float, float] = (0.6, 0.6, 0.6)
+    prompt: str = ""
 
     def aabb_local_m(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         center = np.asarray(self.center_m, dtype=np.float64)
@@ -92,6 +96,11 @@ class SceneSpec:
     ground_z_m: float = -1.05
     table_center_m: tuple[float, float, float] = (0.55, 0.0, -0.025)
     table_size_m: tuple[float, float, float] = (0.70, 1.20, 0.05)
+    table_color: tuple[float, float, float] = (0.45, 0.32, 0.20)
+
+    #: How far apart two colours must be before a text prompt can tell them
+    #: apart.  Euclidean distance in unit RGB.
+    minimum_color_separation: float = 0.35
 
     # --- camera (opposite side from the human) ---------------------------
     camera_position_m: tuple[float, float, float] = (0.50, 1.30, 1.60)
@@ -113,8 +122,22 @@ class SceneSpec:
     # --- proxy tool ------------------------------------------------------
     tool_parts: tuple[ToolPart, ...] = field(
         default_factory=lambda: (
-            ToolPart("head", (0.060, 0.045, 0.045), (0.030, 0.0, 0.0), (1.0, 0.0, 0.0)),
-            ToolPart("handle", (0.140, 0.028, 0.028), (-0.070, 0.0, 0.0), (-1.0, 0.0, 0.0)),
+            ToolPart(
+                "head",
+                (0.060, 0.045, 0.045),
+                (0.030, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                color=(0.85, 0.20, 0.15),
+                prompt="red block",
+            ),
+            ToolPart(
+                "handle",
+                (0.140, 0.028, 0.028),
+                (-0.070, 0.0, 0.0),
+                (-1.0, 0.0, 0.0),
+                color=(0.20, 0.55, 0.85),
+                prompt="blue bar",
+            ),
         )
     )
     danger_part_name: str = "head"
@@ -126,9 +149,9 @@ class SceneSpec:
     # collision boxes and only the poses travel in an arrangement file.
     obstacles: tuple[ObstacleSpec, ...] = field(
         default_factory=lambda: (
-            ObstacleSpec("obstacle_a", (0.10, 0.10, 0.10), (0.45, -0.18, 0.05), (0.85, 0.25, 0.15)),
-            ObstacleSpec("obstacle_b", (0.08, 0.08, 0.12), (0.62, 0.28, 0.06), (0.90, 0.55, 0.15)),
-            ObstacleSpec("obstacle_c", (0.12, 0.12, 0.08), (0.35, 0.35, 0.04), (0.75, 0.35, 0.20)),
+            ObstacleSpec("obstacle_a", (0.10, 0.10, 0.10), (0.45, -0.18, 0.05), (0.45, 0.45, 0.48)),
+            ObstacleSpec("obstacle_b", (0.08, 0.08, 0.12), (0.62, 0.28, 0.06), (0.35, 0.55, 0.35)),
+            ObstacleSpec("obstacle_c", (0.12, 0.12, 0.08), (0.35, 0.35, 0.04), (0.60, 0.58, 0.40)),
         )
     )
 
@@ -181,6 +204,32 @@ class SceneSpec:
         if missing:
             raise KeyError(f"no home position defined for: {missing}")
         return np.array([home[name] for name in requested], dtype=np.float64)
+
+    def color_conflicts(self) -> list[dict]:
+        """Scene colours a text prompt could not tell apart.
+
+        Phase 2 asks SAM3 for the tool by colour, so anything else in the scene
+        wearing that colour is a scene bug, not a perception failure.  This is a
+        check on the layout, made before a single frame is captured.
+        """
+        conflicts = []
+        others = [(obstacle.name, obstacle.color) for obstacle in self.obstacles]
+        others.append(("table", self.table_color))
+        for part in self.tool_parts:
+            part_color = np.asarray(part.color, dtype=np.float64)
+            for name, color in others:
+                distance = float(np.linalg.norm(part_color - np.asarray(color)))
+                if distance < self.minimum_color_separation:
+                    conflicts.append(
+                        {
+                            "tool_part": part.name,
+                            "prompt": part.prompt,
+                            "conflicts_with": name,
+                            "color_distance": round(distance, 4),
+                            "minimum": self.minimum_color_separation,
+                        }
+                    )
+        return conflicts
 
     def part(self, name: str) -> ToolPart:
         for candidate in self.tool_parts:
@@ -363,6 +412,8 @@ class SceneSpec:
                 self.camera_position_m[1] > self.table_max_xy_m[1]
             ),
             "handover_faces_the_human_along_minus_y": handover_to_human[1] < -0.8,
+            # Phase 2 finds the tool by colour; nothing else may wear it.
+            "no_scene_object_shares_a_tool_colour": not self.color_conflicts(),
         }
         # NumPy comparisons return np.bool_, which json.dumps refuses.
         checks = {name: bool(value) for name, value in checks.items()}
@@ -405,6 +456,7 @@ class SceneSpec:
                 "robot_home_envelope_height_m": self.robot_body_height_m,
             },
             "automatic_checks": checks,
+            "color_conflicts": self.color_conflicts(),
         }
 
 

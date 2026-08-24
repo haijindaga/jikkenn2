@@ -179,3 +179,54 @@ def test_home_fingers_are_open():
     # The Panda gripper opens to 0.04 m per finger, 0.08 m total.
     assert home["panda_finger_joint1"] == pytest.approx(0.04)
     assert home["panda_finger_joint2"] == pytest.approx(0.04)
+
+
+def test_nothing_in_the_scene_wears_a_tool_colour():
+    """Phase 2 finds the tool by colour, so a colour clash is a scene bug."""
+    assert DEFAULT_SCENE.color_conflicts() == []
+    assert DEFAULT_SCENE.validation_report()["automatic_checks"][
+        "no_scene_object_shares_a_tool_colour"
+    ]
+
+
+def test_a_red_obstacle_is_caught_before_a_frame_is_captured():
+    """The bug that broke the first phase 2 batch, as a test.
+
+    obstacle_a was the same red as the tool's head, so 'red block' segmented
+    the obstacle and every grasp was proposed 33 cm from the tool.
+    """
+    from jikkenn2.scene_spec import ObstacleSpec
+
+    clashing = dataclasses.replace(
+        DEFAULT_SCENE,
+        obstacles=(
+            ObstacleSpec("obstacle_a", (0.1, 0.1, 0.1), (0.45, -0.18, 0.05), (0.85, 0.25, 0.15)),
+        ),
+    )
+    conflicts = clashing.color_conflicts()
+    assert len(conflicts) == 1
+    assert conflicts[0]["tool_part"] == "head"
+    assert conflicts[0]["conflicts_with"] == "obstacle_a"
+    assert not clashing.validation_report()["automatic_checks"][
+        "no_scene_object_shares_a_tool_colour"
+    ]
+
+
+def test_the_table_is_also_checked_against_the_tool_colours():
+    clashing = dataclasses.replace(DEFAULT_SCENE, table_color=(0.85, 0.20, 0.15))
+    conflicts = clashing.color_conflicts()
+    assert any(entry["conflicts_with"] == "table" for entry in conflicts)
+
+
+def test_each_part_carries_the_prompt_that_finds_it():
+    head = DEFAULT_SCENE.part("head")
+    handle = DEFAULT_SCENE.part("handle")
+    assert head.prompt and handle.prompt
+    assert head.prompt != handle.prompt
+    assert head.color != handle.color
+
+
+def test_the_two_tool_parts_are_far_apart_in_colour():
+    head = np.asarray(DEFAULT_SCENE.part("head").color)
+    handle = np.asarray(DEFAULT_SCENE.part("handle").color)
+    assert float(np.linalg.norm(head - handle)) > DEFAULT_SCENE.minimum_color_separation

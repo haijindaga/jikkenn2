@@ -37,8 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
         "--prompt",
-        default="red block",
-        help="Short noun phrase for SAM3; the Phase 0 proxy head is a red box",
+        default=None,
+        help="Short noun phrase for SAM3; defaults to the grasped part's own prompt",
     )
     parser.add_argument("--model-id", default="facebook/sam3")
     parser.add_argument("--device", default="cuda")
@@ -126,7 +126,12 @@ def main() -> int:
         points_world = np.load(args.capture / "points_world.npy")
         tool_pose = np.load(args.capture / "tool_pose_world.npy")
 
-        prediction = run_sam3(rgb, args.prompt, args)
+        prompt = args.prompt or scene.part(scene.grasp_part_name).prompt
+        if not prompt:
+            raise ValueError(
+                f"no prompt for part {scene.grasp_part_name!r}; pass --prompt"
+            )
+        prediction = run_sam3(rgb, prompt, args)
         masks = prediction["masks"]
         union = (
             np.any(masks, axis=0)
@@ -161,7 +166,7 @@ def main() -> int:
             "status": "success" if all(checks.values()) else "failed_checks",
             "reference": "Hugging Face Transformers SAM3, text-prompted",
             "capture": str(args.capture),
-            "prompt": args.prompt,
+            "prompt": prompt,
             "model_id": args.model_id,
             "thresholds": {
                 "score": args.score_threshold,
